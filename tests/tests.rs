@@ -52,10 +52,18 @@ mod integration_tests {
         let mut sol_listener = DummySolListener;
         terminator.new_timeout(EXPLORE_TIMEOUT);
 
-        let builder = LBFBuilder::new(instance.clone(), rng, LBF_SAMPLE_CONFIG).construct();
+        let builder =
+            LBFBuilder::new(instance.clone(), rng, LBF_SAMPLE_CONFIG).construct(&terminator);
         let mut separator = Separator::new(builder.instance, builder.prob, builder.rng, config.expl_cfg.separator_config);
 
-        let sols = exploration_phase(&instance, &mut separator, &mut sol_listener, &terminator, &config.expl_cfg);
+        let sols = exploration_phase(
+            &instance,
+            &mut separator,
+            &mut sol_listener,
+            &terminator,
+            &config.expl_cfg,
+            false,
+        );
         let final_explore_sol = sols.last().expect("no solutions found during exploration");
 
         terminator.new_timeout(COMPRESS_TIMEOUT);
