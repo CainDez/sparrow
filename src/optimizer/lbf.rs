@@ -2,6 +2,7 @@ use crate::eval::lbf_evaluator::LBFEvaluator;
 use crate::eval::sample_eval::SampleEval;
 use crate::sample::search::{search_placement, SampleConfig};
 use crate::util::assertions;
+use crate::util::terminator::Terminator;
 use itertools::Itertools;
 use jagua_rs::entities::Instance;
 use jagua_rs::probs::spp::entities::{SPInstance, SPPlacement, SPProblem};
@@ -35,7 +36,7 @@ impl LBFBuilder {
         }
     }
 
-    pub fn construct(mut self) -> Self {
+    pub fn construct(mut self, term: &impl Terminator) -> Self {
         let start = Instant::now();
         let n_items = self.instance.items.len();
         let sorted_item_indices = (0..n_items)
@@ -54,10 +55,20 @@ impl LBFBuilder {
         debug!("[CONSTR] placing items in order: {:?}",sorted_item_indices);
 
         for item_id in sorted_item_indices {
+            // [PandaNest patch] construction is interruptible per item; a killed
+            // run leaves a partial layout that callers discard via their own
+            // cancellation checks before using the result.
+            if term.kill() {
+                break;
+            }
             self.place_item(item_id);
         }
 
-        self.prob.fit_strip();
+        // [PandaNest patch] fit_strip would panic on an empty layout; a killed
+        // construction that placed nothing keeps the problem's initial strip.
+        if !self.prob.layout.placed_items.is_empty() {
+            self.prob.fit_strip();
+        }
         debug!("[CONSTR] placed all items in width: {:.3} (in {:?})",self.prob.strip_width(), start.elapsed());
         self
     }
@@ -82,7 +93,7 @@ impl LBFBuilder {
         let item = self.instance.item(item_id);
         let evaluator = LBFEvaluator::new(layout, item);
 
-        let (best_sample, _) = search_placement(layout, item, None, evaluator, self.sample_config, &mut self.rng);
+        let (best_sample, _) = search_placement(layout, item, None, evaluator, self.sample_config, &mut self.rng, None);
 
         match best_sample {
             Some((d_transf, SampleEval::Clear { .. })) => {

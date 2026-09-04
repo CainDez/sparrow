@@ -33,7 +33,12 @@ pub struct ExplorationConfig {
     pub max_conseq_failed_attempts: Option<usize>,
     pub solution_pool_distribution_stddev: f32,
     pub separator_config: SeparatorConfig,
-    pub large_item_ch_area_cutoff_percentile: f32
+    pub large_item_ch_area_cutoff_percentile: f32,
+    /// [PandaNest patch] Feasibility-oracle mode: when set, the strip width jumps
+    /// straight to this target after the first feasible separation, and the
+    /// exploration phase stops as soon as a feasible solution at or below the
+    /// target is found.
+    pub target_width: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -70,7 +75,8 @@ pub const DEFAULT_SPARROW_CONFIG: SparrowConfig = SparrowConfig {
                 n_coord_descents: 3,
             },
         },
-        large_item_ch_area_cutoff_percentile: 0.75
+        large_item_ch_area_cutoff_percentile: 0.75,
+        target_width: None,
     },
     cmpr_cfg: CompressionConfig {
         shrink_range: (0.0005, 0.00001),

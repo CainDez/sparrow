@@ -2,7 +2,7 @@ use jagua_rs::Instant;
 use std::time::Duration;
 
 /// Generic trait for any struct that can determine if the optimization process should terminate.
-pub trait Terminator {
+pub trait Terminator: Send + Sync {
     /// Checks if the termination condition is met
     fn kill(&self) -> bool;
 

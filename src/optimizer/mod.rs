@@ -29,11 +29,16 @@ pub fn optimize(
     initial_solution: Option<&SPSolution>
 ) -> SPSolution {
     let mut next_rng = || Xoshiro256PlusPlus::seed_from_u64(rng.next_u64());
-    
+
+    // Initialization belongs to the exploration phase and must consume the
+    // same per-call budget as the separator that follows it.
+    terminator.new_timeout(expl_config.time_limit);
+
     // First build an initial solution if none is provided
+    let has_initial_solution = initial_solution.is_some();
     let start_prob = match initial_solution {
         None => {
-            let builder = LBFBuilder::new(instance.clone(), next_rng(), LBF_SAMPLE_CONFIG).construct();
+            let builder = LBFBuilder::new(instance.clone(), next_rng(), LBF_SAMPLE_CONFIG).construct(terminator);
             builder.prob
         }
         Some(init_sol) => {
@@ -45,7 +50,6 @@ pub fn optimize(
     };
 
     // Begin by executing the exploration phase
-    terminator.new_timeout(expl_config.time_limit);
     let mut expl_separator = Separator::new(instance.clone(), start_prob, next_rng(), expl_config.separator_config);
     let solutions = exploration_phase(
         &instance,
@@ -53,6 +57,7 @@ pub fn optimize(
         sol_listener,
         terminator,
         expl_config,
+        has_initial_solution,
     );
     let final_explore_sol = solutions.last().unwrap().clone();
 

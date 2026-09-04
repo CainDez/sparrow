@@ -1,6 +1,7 @@
 use crate::consts::{CD_STEP_FAIL, CD_STEP_SUCCESS};
 use crate::eval::sample_eval::{SampleEval, SampleEvaluator};
 use jagua_rs::geometry::DTransformation;
+use jagua_rs::Instant;
 use log::trace;
 use rand::{Rng, RngExt};
 use std::cmp::Ordering;
@@ -26,6 +27,7 @@ pub fn refine_coord_desc(
     evaluator: &mut impl SampleEvaluator,
     cd_config: CDConfig,
     rng: &mut impl Rng,
+    timeout: Option<Instant>,
 ) -> (DTransformation, SampleEval) {
     let n_evals_init = evaluator.n_evals();
     let init_pos = init_dt;
@@ -44,6 +46,9 @@ pub fn refine_coord_desc(
 
     // From the CD state, ask for candidate positions to evaluate. If none provided, stop.
     while let Some(c) = cd.ask() {
+        if timeout.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
         // Evaluate the candidates using the evaluator.
         let c_eval = c.map(|c| evaluator.evaluate_sample(c, Some(cd.eval)));
         

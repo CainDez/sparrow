@@ -8,6 +8,7 @@ use itertools::Itertools;
 use jagua_rs::entities::{Instance, PItemKey};
 use jagua_rs::geometry::DTransformation;
 use jagua_rs::probs::spp::entities::{SPInstance, SPPlacement, SPProblem, SPSolution};
+use jagua_rs::Instant;
 use log::debug;
 use rand::prelude::SliceRandom;
 use std::iter::Sum;
@@ -32,7 +33,7 @@ impl SeparatorWorker {
     }
 
     /// Algorithm 5 from https://doi.org/10.48550/arXiv.2509.13329
-    pub fn move_items(&mut self) -> SepStats {
+    pub fn move_items(&mut self, timeout: Option<Instant>, kill: &(dyn Fn() -> bool + Sync)) -> SepStats {
         // Collect all colliding items in a random order
         let candidates = self.prob.layout.placed_items.keys()
             .filter(|pk| self.ct.get_loss(*pk) > 0.0)
@@ -44,6 +45,12 @@ impl SeparatorWorker {
 
         // Give each colliding item the opportunity to move to a better (eval) position
         for &pk in candidates.iter() {
+            // [PandaNest patch] external cancellation is honoured per item, not
+            // only between sweeps; a sweep over a dense layout must not delay
+            // an abort by up to a full phase deadline.
+            if kill() || timeout.is_some_and(|deadline| Instant::now() >= deadline) {
+                break;
+            }
             // First check if the item is still colliding
             if self.ct.get_loss(pk) > 0.0 {
                 let item_id = self.prob.layout.placed_items[pk].item_id;
@@ -54,7 +61,7 @@ impl SeparatorWorker {
 
                 // Perform the search for a better position for the item
                 let (best_sample, n_evals) =
-                    search::search_placement(&self.prob.layout, item, Some(pk), evaluator, self.sample_config, &mut self.rng);
+                    search::search_placement(&self.prob.layout, item, Some(pk), evaluator, self.sample_config, &mut self.rng, timeout);
 
                 let (new_dt, _eval) = best_sample.expect("search_placement should always return a sample");
 

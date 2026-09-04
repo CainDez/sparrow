@@ -85,11 +85,11 @@ fn main() -> Result<()> {
 
                 s.spawn(move |_| {
                     let mut next_rng = || Xoshiro256PlusPlus::seed_from_u64(rng.next_u64());
-                    let builder = LBFBuilder::new(instance.clone(), next_rng(), LBF_SAMPLE_CONFIG).construct();
+                    let builder = LBFBuilder::new(instance.clone(), next_rng(), LBF_SAMPLE_CONFIG).construct(&terminator);
                     let mut expl_separator = Separator::new(builder.instance, builder.prob, next_rng(), config.expl_cfg.separator_config);
 
                     terminator.new_timeout(config.expl_cfg.time_limit);
-                    let solutions = exploration_phase(&instance, &mut expl_separator, &mut DummySolListener, &terminator, &config.expl_cfg);
+                    let solutions = exploration_phase(&instance, &mut expl_separator, &mut DummySolListener, &terminator, &config.expl_cfg, false);
                     let final_explore_sol = solutions.last().expect("no solutions found during exploration");
 
                     let start_comp = Instant::now();

@@ -86,9 +86,12 @@ impl Separator {
             let initial_strike_loss = self.ct.get_total_loss();
             debug!("[SEP] [s:{n_strikes},i:{n_iter}]     init_l: {}",FMT().fmt2(initial_strike_loss));
 
-            while n_iter_no_improvement < self.config.iter_no_imprv_limit {
+            while n_iter_no_improvement < self.config.iter_no_imprv_limit && !term.kill() {
                 let (loss_before, w_loss_before) = (self.ct.get_total_loss(), self.ct.get_total_weighted_loss(),);
-                sep_stats += self.move_items_multi();
+                // [PandaNest patch] forward the terminator as a per-item kill
+                // check so external cancellation interrupts a running sweep.
+                let kill = | | term.kill();
+                sep_stats += self.move_items_multi(term.timeout_at(), &kill);
                 let (loss, w_loss) = (self.ct.get_total_loss(), self.ct.get_total_weighted_loss(),);
 
                 debug!("[SEP] [s:{n_strikes},i:{n_iter}] ( ) l: {} -> {}, wl: {} -> {}, (min l: {})", FMT().fmt2(loss_before), FMT().fmt2(loss), FMT().fmt2(w_loss_before), FMT().fmt2(w_loss), FMT().fmt2(min_loss));
@@ -143,7 +146,7 @@ impl Separator {
     }
 
     /// Algorithm 10 from https://doi.org/10.48550/arXiv.2509.13329
-    fn move_items_multi(&mut self) -> SepStats {
+    fn move_items_multi(&mut self, timeout: Option<Instant>, kill: &(dyn Fn() -> bool + Sync)) -> SepStats {
         let master_sol = self.prob.save();
 
         // Define the parallel execution closure
@@ -152,7 +155,7 @@ impl Separator {
                 // Sync the workers with the master
                 worker.load(&master_sol, &self.ct);
                 // Let all of them run `move_items` with unique random orderings in which the items are moved
-                worker.move_items()
+                worker.move_items(timeout, kill)
             }).sum()
         };
 

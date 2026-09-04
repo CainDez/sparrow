@@ -6,6 +6,7 @@ use crate::sample::uniform_sampler::UniformBBoxSampler;
 use jagua_rs::entities::{Item, Layout, PItemKey};
 use jagua_rs::geometry::geo_enums::RotationRange;
 use jagua_rs::geometry::DTransformation;
+use jagua_rs::Instant;
 use log::debug;
 use rand::Rng;
 
@@ -17,7 +18,7 @@ pub struct SampleConfig {
 }
 
 /// Algorithm 6 and Figure 7 from https://doi.org/10.48550/arXiv.2509.13329
-pub fn search_placement(l: &Layout, item: &Item, ref_pk: Option<PItemKey>, mut evaluator: impl SampleEvaluator, sample_config: SampleConfig, rng: &mut impl Rng) -> (Option<(DTransformation, SampleEval)>, usize) {
+pub fn search_placement(l: &Layout, item: &Item, ref_pk: Option<PItemKey>, mut evaluator: impl SampleEvaluator, sample_config: SampleConfig, rng: &mut impl Rng, timeout: Option<Instant>) -> (Option<(DTransformation, SampleEval)>, usize) {
     let item_min_dim = f32::min(item.shape_cd.bbox.width(), item.shape_cd.bbox.height());
 
     let mut best_samples = BestSamples::new(sample_config.n_coord_descents, item_min_dim * UNIQUE_SAMPLE_THRESHOLD);
@@ -43,6 +44,7 @@ pub fn search_placement(l: &Layout, item: &Item, ref_pk: Option<PItemKey>, mut e
     //Perform the focussed sampling
     if let Some(focussed_sampler) = focussed_sampler {
         for _ in 0..sample_config.n_focussed_samples {
+            if timed_out(timeout) { break; }
             let dt = focussed_sampler.sample(rng);
             let eval = evaluator.evaluate_sample(dt, Some(best_samples.upper_bound()));
             best_samples.report(dt, eval);
@@ -52,6 +54,7 @@ pub fn search_placement(l: &Layout, item: &Item, ref_pk: Option<PItemKey>, mut e
     //Perform the container-wide sampling
     if let Some(container_sampler) = container_sampler {
         for _ in 0..sample_config.n_container_samples {
+            if timed_out(timeout) { break; }
             let dt = container_sampler.sample(rng);
             let eval = evaluator.evaluate_sample(dt, Some(best_samples.upper_bound()));
             best_samples.report(dt, eval);
@@ -62,18 +65,27 @@ pub fn search_placement(l: &Layout, item: &Item, ref_pk: Option<PItemKey>, mut e
 
     //1. Do a first refinement of all 'best samples' using coordinate descent
     for start in best_samples.samples.clone() {
-        let descended = refine_coord_desc(start, &mut evaluator, prerefine_cd_config(item), rng);
+        if timed_out(timeout) { break; }
+        let descended = refine_coord_desc(start, &mut evaluator, prerefine_cd_config(item), rng, timeout);
         best_samples.report(descended.0, descended.1);
     }
 
 
     //2. Take the best one and do an even finer coordinate descent refinement
-    let final_sample = best_samples.best().map(|s|
-        refine_coord_desc(s, &mut evaluator, final_refine_cd_config(item), rng)
-    );
+    let final_sample = best_samples.best().map(|s| {
+        if timed_out(timeout) {
+            s
+        } else {
+            refine_coord_desc(s, &mut evaluator, final_refine_cd_config(item), rng, timeout)
+        }
+    });
 
     debug!("[S] {} samples evaluated, final: {:?}",evaluator.n_evals(),final_sample);
     (final_sample, evaluator.n_evals())
+}
+
+fn timed_out(timeout: Option<Instant>) -> bool {
+    timeout.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
 fn prerefine_cd_config(item: &Item) -> CDConfig {

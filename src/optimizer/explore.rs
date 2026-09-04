@@ -18,7 +18,7 @@ use slotmap::SecondaryMap;
 use std::cmp::Reverse;
 
 /// Algorithm 12 from https://doi.org/10.48550/arXiv.2509.13329
-pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listener: &mut impl SolutionListener, term: &impl Terminator, config: &ExplorationConfig) -> Vec<SPSolution> {
+pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listener: &mut impl SolutionListener, term: &impl Terminator, config: &ExplorationConfig, allow_initial_target_stop: bool) -> Vec<SPSolution> {
     let mut current_width = sep.prob.strip_width();
     let mut best_width = current_width;
 
@@ -26,6 +26,13 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
 
     sol_listener.report(ReportType::ExplFeas, &feasible_sols[0], instance);
     info!("[EXPL] starting optimization with initial width: {:.3} ({:.3}%)",current_width,sep.prob.density() * 100.0);
+
+    // Feasibility-oracle calls frequently start from an already feasible LBF
+    // or warm-start layout. Do not enter the expensive separator in that case.
+    if allow_initial_target_stop && target_reached(current_width, config.target_width) {
+        info!("[EXPL] initial solution already reaches target width ({:.3}), terminating", current_width);
+        return feasible_sols;
+    }
 
     let mut infeas_sol_pool: Vec<(SPSolution, f32)> = vec![];
 
@@ -42,8 +49,17 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
                 feasible_sols.push(local_best.0.clone());
                 sol_listener.report(ReportType::ExplFeas, &local_best.0, instance);
             }
+            // [PandaNest patch] feasibility-oracle mode: target reached, stop exploring.
+            if target_reached(current_width, config.target_width) {
+                info!("[EXPL] target width reached ({:.3}), terminating", current_width);
+                break;
+            }
             // Shrink the strip width and clear the infeasible solution pool
-            let next_width = current_width * (1.0 - config.shrink_step);
+            let next_width = match config.target_width {
+                // [PandaNest patch] jump straight to the target instead of shrinking gradually
+                Some(tw) if tw < current_width => tw,
+                _ => current_width * (1.0 - config.shrink_step),
+            };
             info!("[EXPL] shrinking strip by {}%: {:.3} -> {:.3}", config.shrink_step * 100.0, current_width, next_width);
             sep.change_strip_width(next_width, None);
             current_width = next_width;
@@ -237,4 +253,20 @@ fn practically_contained_items(layout: &Layout, pk_c: PItemKey) -> Vec<PItemKey>
             pi_c.shape.collides_with(&poi.center)
         })
         .collect_vec()
+}
+
+fn target_reached(current_width: f32, target_width: Option<f32>) -> bool {
+    target_width.is_some_and(|target| current_width <= target * (1.0 + 1e-5))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::target_reached;
+
+    #[test]
+    fn target_width_uses_the_same_tolerance_for_initial_and_later_solutions() {
+        assert!(target_reached(100.0009, Some(100.0)));
+        assert!(!target_reached(100.01, Some(100.0)));
+        assert!(!target_reached(100.0, None));
+    }
 }
