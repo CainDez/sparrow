@@ -63,12 +63,20 @@ impl SeparatorWorker {
                 let (best_sample, n_evals) =
                     search::search_placement(&self.prob.layout, item, Some(pk), evaluator, self.sample_config, &mut self.rng, timeout);
 
-                let (new_dt, _eval) = best_sample.expect("search_placement should always return a sample");
+                total_evals += n_evals;
+                let Some((new_dt, _eval)) = best_sample else {
+                    // A deadline-aware search may stop before finding an acceptable
+                    // sample. Keep the current placement instead of panicking; the
+                    // separator will either observe termination or try another item.
+                    if kill() || timeout.is_some_and(|deadline| Instant::now() >= deadline) {
+                        break;
+                    }
+                    continue;
+                };
 
                 // Move the item to the new position
                 self.move_item(pk, new_dt);
                 total_moves += 1;
-                total_evals += n_evals;
             }
         }
         SepStats { total_moves, total_evals }
