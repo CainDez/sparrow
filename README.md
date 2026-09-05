@@ -16,6 +16,10 @@ This optimization algorithm builds on [`jagua-rs`](https://github.com/JeroenGar/
 
 This repository accompanies the paper: ["_An open-source heuristic to reboot 2D nesting research_"](https://doi.org/10.48550/arXiv.2509.13329).
 
+## `sparrow` in action
+
+![The `sparrow` TUI dashboard running alongside the live solution viewer](data/demo.gif)
+
 > [!TIP]
 > Visit [**sparroWASM**](https://jeroengar.github.io/sparroWASM/) to see `sparrow` running in your browser!
 
@@ -39,7 +43,7 @@ This repository accompanies the paper: ["_An open-source heuristic to reboot 2D 
 </p>
 
 ## Requirements
-- [Rust](https://www.rust-lang.org/tools/install) ≥ 1.86
+- [Rust](https://www.rust-lang.org/tools/install) ≥ 1.90
 
 ## Usage
 
@@ -61,6 +65,8 @@ Pressing 'Ctrl + C' immediately moves the algorithm to the next phase, or termin
 -c, --compression <COMPRESSION>  Set the compression phase time limit (in seconds)
 -x, --early-termination          Enable early termination of the optimization process
 -s, --rng-seed <RNG_SEED>        Fixed seed for the random number generator
+--min-item-separation <MIN_ITEM_SEPARATION> Minimum distance between items and other hazards
+--workers <WORKERS>           Number of worker threads used by the separator
 -h, --help                       Print help
 ```
 
@@ -70,18 +76,24 @@ cargo run --release -- \
     -i data/input/swim.json
 ```
 
-## Visualizer
+## Live visualization
 
-This repo contains a simple visualizer to monitor the optimization process live.
-Open [live_viewer.html](data/live/live_viewer.html) in a web browser,
-and build `sparrow` with the `live_svg` feature enabled:
+`sparrow` can show the search in a terminal dashboard alongside a live browser view of the current solution.
+The dashboard reports the current phase, progress, throughput, and logs. It continuously updates the SVG used by
+[live_viewer.html](data/live/live_viewer.html):
+
+```bash
+cargo run --release --features=tui -- \
+    -i data/input/swim.json
+```
+
+For the browser viewer without the dashboard, open
+[live_viewer.html](data/live/live_viewer.html) and enable the `live_svg` feature:
 
 ```bash
 cargo run --release --features=live_svg -- \
     -i data/input/swim.json
 ```
-
-![Demo of the live solution viewer](data/demo.gif)
 
 ## Input
 
@@ -170,9 +182,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgements
 
-This project began development at the CODeS research group of [NUMA - KU Leuven](https://numa.cs.kuleuven.be/) and was funded by [Research Foundation - Flanders (FWO)](https://www.fwo.be/en/) (grant number: 1S71222N).
 <p>
-<img src="https://upload.wikimedia.org/wikipedia/commons/4/49/KU_Leuven_logo.svg" height="50px" alt="KU Leuven logo">
+<img src="https://upload.wikimedia.org/wikipedia/commons/4/49/KU_Leuven_logo.svg" height="30px" alt="KU Leuven logo">
 &nbsp;
-<img src="https://upload.wikimedia.org/wikipedia/commons/9/97/Fonds_Wetenschappelijk_Onderzoek_logo_2024.svg" height="50px" alt="FWO logo">
+<img src="https://upload.wikimedia.org/wikipedia/commons/9/97/Fonds_Wetenschappelijk_Onderzoek_logo_2024.svg" height="30px" alt="FWO logo">
 </p>
+
+
+This project began development at the CODeS research group of [NUMA - KU Leuven](https://numa.cs.kuleuven.be/) and was funded by [Research Foundation - Flanders (FWO)](https://www.fwo.be/en/) (grant number: 1S71222N) until October 2025.
+
+Since then, I have continued the development and maintenance of the project independently.
+If you find `sparrow` useful and would like to support its continued development and maintenance, you can do so through [GitHub Sponsors](https://github.com/sponsors/JeroenGar) or [Buy Me a Coffee](https://buymeacoffee.com/jeroengards).

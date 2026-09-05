@@ -6,6 +6,7 @@ use crate::util::terminator::Terminator;
 use crate::FMT;
 use float_cmp::approx_eq;
 use itertools::Itertools;
+use jagua_rs::collision_detection::hazards::collector::BasicHazardCollector;
 use jagua_rs::collision_detection::hazards::HazardEntity;
 use jagua_rs::entities::{Instance, Layout, PItemKey};
 use jagua_rs::geometry::geo_traits::CollidesWith;
@@ -14,7 +15,6 @@ use log::{debug, info, warn};
 use ordered_float::OrderedFloat;
 use rand::prelude::{Distribution, IteratorRandom};
 use rand_distr::Normal;
-use slotmap::SecondaryMap;
 use std::cmp::Reverse;
 
 /// Algorithm 12 from https://doi.org/10.48550/arXiv.2509.13329
@@ -65,7 +65,7 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
             current_width = next_width;
             infeas_sol_pool.clear();
         } else {
-            info!("[EXPL] unable to reach feasibility (width: {:.3}, dens: {:.3}%, min loss: {:.3})", current_width, sep.prob.density() * 100.0, FMT().fmt2(total_loss));
+            info!("[EXPL] unable to reach feasibility (width: {:.3}, dens: {:.3}%, min loss: {})", current_width, sep.prob.density() * 100.0, FMT().fmt2(total_loss));
             sol_listener.report(ReportType::ExplInfeas, &local_best.0, instance);
 
             // Separation was not successful add it to the pool of infeasible solutions
@@ -235,7 +235,7 @@ fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig) {
 fn practically_contained_items(layout: &Layout, pk_c: PItemKey) -> Vec<PItemKey> {
     let pi_c = &layout.placed_items[pk_c];
     // Detect all collisions with the item pk_c's shape.
-    let mut collector = SecondaryMap::new();
+    let mut collector = BasicHazardCollector::new();
     layout.cde().collect_poly_collisions(&pi_c.shape, &mut collector);
 
     // Filter out the items that have their POI contained by pk_c's shape.
@@ -254,7 +254,6 @@ fn practically_contained_items(layout: &Layout, pk_c: PItemKey) -> Vec<PItemKey>
         })
         .collect_vec()
 }
-
 fn target_reached(current_width: f32, target_width: Option<f32>) -> bool {
     target_width.is_some_and(|target| current_width <= target * (1.0 + 1e-5))
 }

@@ -4,7 +4,7 @@ use crate::optimizer::compress::compression_phase;
 use crate::optimizer::explore::exploration_phase;
 use crate::optimizer::lbf::LBFBuilder;
 use crate::optimizer::separator::Separator;
-use crate::util::listener::{ReportType, SolutionListener};
+use crate::util::listener::{OptimizationPhase, ReportType, SolutionListener};
 use crate::util::terminator::Terminator;
 use jagua_rs::probs::spp::entities::{SPInstance, SPSolution};
 use log::info;
@@ -32,6 +32,7 @@ pub fn optimize(
 
     // Initialization belongs to the exploration phase and must consume the
     // same per-call budget as the separator that follows it.
+    sol_listener.report_phase(OptimizationPhase::Exploration);
     terminator.new_timeout(expl_config.time_limit);
 
     // First build an initial solution if none is provided
@@ -62,6 +63,7 @@ pub fn optimize(
     let final_explore_sol = solutions.last().unwrap().clone();
 
     // Start the compression phase from the final solution from the exploration phase
+    sol_listener.report_phase(OptimizationPhase::Compression);
     terminator.new_timeout(cmpr_config.time_limit);
     let mut cmpr_separator = Separator::new(expl_separator.instance, expl_separator.prob, next_rng(), cmpr_config.separator_config);
     let cmpr_sol = compression_phase(
