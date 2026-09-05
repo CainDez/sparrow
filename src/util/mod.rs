@@ -7,3 +7,4 @@ pub mod terminator;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ctrlc_terminator;
+pub mod optimization_step;

@@ -4,6 +4,7 @@ use crate::sample::search;
 use crate::sample::search::SampleConfig;
 use crate::util::assertions::tracker_matches_layout;
 use crate::FMT;
+use crate::util::optimization_step::ItemMove;
 use itertools::Itertools;
 use jagua_rs::entities::{Instance, PItemKey};
 use jagua_rs::geometry::DTransformation;
@@ -17,6 +18,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 use tap::Tap;
 
 pub struct SeparatorWorker {
+    pub trace_moves: Vec<ItemMove>,
     pub instance: SPInstance,
     pub prob: SPProblem,
     pub ct: CollisionTracker,
@@ -33,7 +35,9 @@ impl SeparatorWorker {
     }
 
     /// Algorithm 5 from https://doi.org/10.48550/arXiv.2509.13329
-    pub fn move_items(&mut self, timeout: Option<Instant>, kill: &(dyn Fn() -> bool + Sync)) -> SepStats {
+    pub fn move_items(&mut self, timeout: Option<Instant>, kill: &(dyn Fn() -> bool + Sync), record_moves: bool) -> SepStats {
+        self.trace_moves.clear();
+        let trace_start = record_moves.then(Instant::now);
         // Collect all colliding items in a random order
         let candidates = self.prob.layout.placed_items.keys()
             .filter(|pk| self.ct.get_loss(*pk) > 0.0)
@@ -55,6 +59,7 @@ impl SeparatorWorker {
             if self.ct.get_loss(pk) > 0.0 {
                 let item_id = self.prob.layout.placed_items[pk].item_id;
                 let item = self.instance.item(item_id);
+                let trace_before = record_moves.then(|| (self.prob.layout.placed_items[pk].d_transf, self.ct.get_loss(pk), self.ct.get_weighted_loss(pk)));
 
                 // Create an 'evaluator' to perform collision detection and collision quantification of the samples during the search
                 let evaluator = SeparationEvaluator::new(&self.prob.layout, item, pk, &self.ct);
@@ -65,6 +70,11 @@ impl SeparatorWorker {
 
                 total_evals += n_evals;
                 let Some((new_dt, _eval)) = best_sample else {
+                    if let Some((before, loss, weighted_loss)) = trace_before {
+                        self.trace_moves.push(ItemMove { item_id, before, after: None, loss_before: loss, loss_after: loss,
+                            weighted_loss_before: weighted_loss, weighted_loss_after: weighted_loss, evaluations: n_evals,
+                            elapsed_ms: trace_start.unwrap().elapsed().as_secs_f64()*1000.0 });
+                    }
                     // A deadline-aware search may stop before finding an acceptable
                     // sample. Keep the current placement instead of panicking; the
                     // separator will either observe termination or try another item.
@@ -75,7 +85,12 @@ impl SeparatorWorker {
                 };
 
                 // Move the item to the new position
-                self.move_item(pk, new_dt);
+                let new_pk = self.move_item(pk, new_dt);
+                if let Some((before, loss, weighted_loss)) = trace_before {
+                    self.trace_moves.push(ItemMove { item_id, before, after: Some(new_dt), loss_before: loss, loss_after: self.ct.get_loss(new_pk),
+                        weighted_loss_before: weighted_loss, weighted_loss_after: self.ct.get_weighted_loss(new_pk), evaluations: n_evals,
+                        elapsed_ms: trace_start.unwrap().elapsed().as_secs_f64()*1000.0 });
+                }
                 total_moves += 1;
             }
         }

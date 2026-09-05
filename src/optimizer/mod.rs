@@ -39,7 +39,7 @@ pub fn optimize(
     let has_initial_solution = initial_solution.is_some();
     let start_prob = match initial_solution {
         None => {
-            let builder = LBFBuilder::new(instance.clone(), next_rng(), LBF_SAMPLE_CONFIG).construct(terminator);
+            let builder = LBFBuilder::new(instance.clone(), next_rng(), LBF_SAMPLE_CONFIG).construct_with_listener(terminator, sol_listener);
             builder.prob
         }
         Some(init_sol) => {

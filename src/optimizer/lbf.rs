@@ -3,6 +3,8 @@ use crate::eval::sample_eval::SampleEval;
 use crate::sample::search::{search_placement, SampleConfig};
 use crate::util::assertions;
 use crate::util::terminator::Terminator;
+use crate::util::listener::{DummySolListener, SolutionListener};
+use crate::util::optimization_step::{report_step, StepMetric as M};
 use itertools::Itertools;
 use jagua_rs::entities::Instance;
 use jagua_rs::probs::spp::entities::{SPInstance, SPPlacement, SPProblem};
@@ -36,7 +38,11 @@ impl LBFBuilder {
         }
     }
 
-    pub fn construct(mut self, term: &impl Terminator) -> Self {
+    pub fn construct(self, term: &impl Terminator) -> Self {
+        self.construct_with_listener(term, &mut DummySolListener)
+    }
+
+    pub fn construct_with_listener(mut self, term: &impl Terminator, listener: &mut impl SolutionListener) -> Self {
         let start = Instant::now();
         let n_items = self.instance.items.len();
         let sorted_item_indices = (0..n_items)
@@ -61,7 +67,7 @@ impl LBFBuilder {
             if term.kill() {
                 break;
             }
-            self.place_item(item_id);
+            self.place_item(item_id, listener);
         }
 
         // [PandaNest patch] fit_strip would panic on an empty layout; a killed
@@ -69,21 +75,24 @@ impl LBFBuilder {
         if !self.prob.layout.placed_items.is_empty() {
             self.prob.fit_strip();
         }
+        report_step(listener, "initial_layout", "constructed", "fit_initial_strip", &[], &self.prob);
         debug!("[CONSTR] placed all items in width: {:.3} (in {:?})",self.prob.strip_width(), start.elapsed());
         self
     }
 
-    fn place_item(&mut self, item_id: usize) {
+    fn place_item(&mut self, item_id: usize, listener: &mut impl SolutionListener) {
         match self.find_placement(item_id) {
             Some(p_opt) => {
                 self.prob.place_item(p_opt);
+                report_step(listener, "initial_place", "accepted", "clear_candidate", &[M::new("item", item_id as f64, "index")], &self.prob);
                 debug!("[CONSTR] placing item {}/{} with id {} at [{}]",self.prob.layout.placed_items.len(),self.instance.total_item_qty(),p_opt.item_id,p_opt.d_transf);
             }
             None => {
                 debug!("[CONSTR] failed to place item with id {}, expanding strip width",item_id);
                 self.prob.change_strip_width(self.prob.strip_width() * 1.2);
+                report_step(listener, "initial_expand", "retry", "no_clear_candidate", &[M::new("item", item_id as f64, "index")], &self.prob);
                 assert!(assertions::strip_width_is_in_check(&self.prob), "strip-width is running away (>{:.3}), item {item_id} does not seem to fit into the strip", self.prob.strip_width());          
-                self.place_item(item_id);
+                self.place_item(item_id, listener);
             }
         }
     }

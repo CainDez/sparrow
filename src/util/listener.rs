@@ -2,6 +2,18 @@ use jagua_rs::probs::spp::entities::{SPInstance, SPSolution};
 
 /// Trait for listeners that can receive solutions during the optimization process
 pub trait SolutionListener {
+    /// Snapshot construction is disabled for normal product listeners.
+    fn wants_optimization_steps(&self) -> bool { false }
+
+    fn report_item_move(&mut self, _movement: &super::optimization_step::ItemMove, _instance: &SPInstance) {}
+
+    fn report_optimization_step(
+        &mut self,
+        _step: super::optimization_step::OptimizationStep<'_>,
+        _solution: &SPSolution,
+        _instance: &SPInstance,
+    ) {}
+
     fn report(&mut self, report: ReportType, solution: &SPSolution, instance: &SPInstance);
 
     fn report_phase(&mut self, _phase: OptimizationPhase) {}

@@ -2,6 +2,7 @@ use crate::config::ExplorationConfig;
 use crate::optimizer::separator::{Separator, SeparatorConfig};
 use crate::sample::uniform_sampler::convert_sample_to_closest_feasible;
 use crate::util::listener::{ReportType, SolutionListener};
+use crate::util::optimization_step::{report_step, StepMetric as M};
 use crate::util::terminator::Terminator;
 use crate::FMT;
 use float_cmp::approx_eq;
@@ -30,11 +31,13 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
     // Feasibility-oracle calls frequently start from an already feasible LBF
     // or warm-start layout. Do not enter the expensive separator in that case.
     if allow_initial_target_stop && target_reached(current_width, config.target_width) {
+        report_step(sol_listener, "exploration_stop", "stopped", "initial_target_reached", &[], &sep.prob);
         info!("[EXPL] initial solution already reaches target width ({:.3}), terminating", current_width);
         return feasible_sols;
     }
 
     let mut infeas_sol_pool: Vec<(SPSolution, f32)> = vec![];
+    let mut reported_stop = false;
 
     while !term.kill() {
         // Attempt to separate the current layout
@@ -51,6 +54,8 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
             }
             // [PandaNest patch] feasibility-oracle mode: target reached, stop exploring.
             if target_reached(current_width, config.target_width) {
+                report_step(sol_listener, "exploration_stop", "stopped", "target_reached", &[], &sep.prob);
+                reported_stop = true;
                 info!("[EXPL] target width reached ({:.3}), terminating", current_width);
                 break;
             }
@@ -62,6 +67,9 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
             };
             info!("[EXPL] shrinking strip by {}%: {:.3} -> {:.3}", config.shrink_step * 100.0, current_width, next_width);
             sep.change_strip_width(next_width, None);
+            report_step(sol_listener, "exploration_shrink", "attempt", "search_narrower_strip", &[
+                M::new("width_before", current_width, "mm"), M::new("width", next_width, "mm"),
+            ], &sep.prob);
             current_width = next_width;
             infeas_sol_pool.clear();
         } else {
@@ -74,12 +82,16 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
             }
 
             if infeas_sol_pool.len() >= config.max_conseq_failed_attempts.unwrap_or(usize::MAX) {
+                report_step(sol_listener, "exploration_stop", "stopped", "consecutive_failure_limit", &[
+                    M::new("failed_attempts", infeas_sol_pool.len() as f64, "count"),
+                ], &sep.prob);
+                reported_stop = true;
                 info!("[EXPL] max consecutive failed attempts ({}), terminating", infeas_sol_pool.len());
                 break;
             }
 
             // Restore to a random solution from the pool, with better solutions having more chance to be selected
-            let selected_sol = {
+            let (selected_idx, selected_sol) = {
                 // Sample a value in range [0.0, 1.0[ from a normal distribution
                 let distribution = Normal::new(0.0, config.solution_pool_distribution_stddev).unwrap();
                 let sample = distribution.sample(&mut sep.rng).abs().min(0.999);
@@ -88,22 +100,29 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
 
                 let (selected_sol, loss) = &infeas_sol_pool[selected_idx];
                 info!("[EXPL] starting solution {}/{} selected from solution pool (l: {}) to disrupt", selected_idx, infeas_sol_pool.len(), FMT().fmt2(*loss));
-                selected_sol
+                (selected_idx, selected_sol)
             };
 
             // Rollback to this solution and disrupt it.
             sep.rollback(selected_sol, None);
-            disrupt_solution(sep, config);
+            report_step(sol_listener, "pool_rollback", "restored", "sample_infeasible_pool", &[
+                M::new("pool_index", selected_idx as f64, "index"),
+                M::new("pool_size", infeas_sol_pool.len() as f64, "count"),
+                M::new("loss", sep.ct.get_total_loss(), "loss"),
+            ], &sep.prob);
+            disrupt_solution(sep, config, sol_listener);
         }
     }
 
+    if !reported_stop { report_step(sol_listener, "exploration_stop", "stopped", "termination_observed", &[], &sep.prob); }
     info!("[EXPL] finished, best feasible solution: width: {:.3} ({:.3}%)",best_width,feasible_sols.last().unwrap().density(instance) * 100.0);
 
     feasible_sols
 }
 
-fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig) {
+fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig, sol_listener: &mut impl SolutionListener) {
     if sep.prob.layout.placed_items.len() < 2 {
+        report_step(sol_listener, "disrupt", "skipped", "fewer_than_two_items", &[], &sep.prob);
         warn!("[DSRP] cannot disrupt solution with less than 2 items");
         return;
     }
@@ -178,6 +197,7 @@ fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig) {
 
     let dt1_old = pi1.d_transf;
     let dt2_old = pi2.d_transf;
+    let swapped_ids = (pi1.item_id, pi2.item_id);
 
     // Make sure the swaps do not violate feasibility (rotation).
     let dt1_new = convert_sample_to_closest_feasible(dt2_old, sep.prob.instance.item(pi1.item_id));
@@ -229,6 +249,10 @@ fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig) {
             sep.move_item(c2_pk, new_feasible_dt);
         }
     }
+    report_step(sol_listener, "disrupt", "changed", "swap_large_items_and_relocate_contained_items", &[
+        M::new("item_a", swapped_ids.0 as f64, "index"), M::new("item_b", swapped_ids.1 as f64, "index"),
+        M::new("loss", sep.ct.get_total_loss(), "loss"),
+    ], &sep.prob);
 }
 
 /// Collects all items which point of inaccessibility (POI) is contained by pk_c's shape.

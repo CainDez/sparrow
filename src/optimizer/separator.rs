@@ -4,6 +4,7 @@ use crate::quantify::tracker::{CTSnapshot, CollisionTracker};
 use crate::sample::search::SampleConfig;
 use crate::util::assertions::tracker_matches_layout;
 use crate::util::listener::{ReportType, SeparationProgress, SeparationResult, SolutionListener};
+use crate::util::optimization_step::{report_step, StepMetric as M};
 use crate::FMT;
 use itertools::Itertools;
 use jagua_rs::entities::PItemKey;
@@ -42,6 +43,7 @@ impl Separator {
         let ct = CollisionTracker::new(&prob.layout);
         let workers = (0..config.n_workers).map(|_|
             SeparatorWorker {
+                trace_moves: Vec::new(),
                 instance: instance.clone(),
                 prob: prob.clone(),
                 ct: ct.clone(),
@@ -76,10 +78,12 @@ impl Separator {
         let density = self.prob.density() * 100.0;
         let progress = |iteration, min_loss| SeparationProgress { strip_width, density, iteration, min_loss };
         sol_listener.report_separation_progress(progress(0, min_loss));
+        report_step(sol_listener, "separation_start", "start", "current_layout", &[M::new("loss", min_loss, "loss")], &self.prob);
         log!(self.config.log_level,"[SEP] separating at width: {:.3} and loss: {} ", self.prob.strip_width(), FMT().fmt2(min_loss));
 
         let mut n_strikes = 0;
         let mut n_iter = 0;
+        let mut completed_iterations = 0;
         let mut sep_stats = SepStats { total_moves: 0, total_evals: 0 };
         let start = Instant::now();
 
@@ -95,8 +99,17 @@ impl Separator {
                 // [PandaNest patch] forward the terminator as a per-item kill
                 // check so external cancellation interrupts a running sweep.
                 let kill = | | term.kill();
-                sep_stats += self.move_items_multi(term.timeout_at(), &kill);
+                let iteration_stats = self.move_items_multi(term.timeout_at(), &kill, sol_listener, completed_iterations + 1);
+                completed_iterations += 1;
+                sep_stats += iteration_stats;
                 let (loss, w_loss) = (self.ct.get_total_loss(), self.ct.get_total_weighted_loss(),);
+                report_step(sol_listener, "separation_iteration", if loss == 0.0 { "feasible" } else if loss < min_loss { "improved" } else { "no_improvement" }, "minimum_weighted_loss_worker", &[
+                    M::new("iteration", completed_iterations as f64, "index"),
+                    M::new("loss_before", loss_before, "loss"), M::new("loss", loss, "loss"),
+                    M::new("weighted_loss_before", w_loss_before, "loss"), M::new("weighted_loss", w_loss, "loss"),
+                    M::new("best_loss_before", min_loss, "loss"),
+                    M::new("strikes", n_strikes as f64, "count"),
+                ], &self.prob);
 
                 debug!("[SEP] [s:{n_strikes},i:{n_iter}] ( ) l: {} -> {}, wl: {} -> {}, (min l: {})", FMT().fmt2(loss_before), FMT().fmt2(loss), FMT().fmt2(w_loss_before), FMT().fmt2(w_loss), FMT().fmt2(min_loss));
                 debug_assert!(w_loss <= w_loss_before * 1.001, "weighted loss should not increase: {} -> {}", FMT().fmt2(w_loss), FMT().fmt2(w_loss_before));
@@ -125,6 +138,10 @@ impl Separator {
                 sol_listener.report_separation_progress(progress(n_iter + 1, min_loss));
                 // Update the GLS weights
                 self.ct.update_weights();
+                report_step(sol_listener, "update_weights", "continue", "penalize_remaining_collisions", &[
+                    M::new("weighted_loss_before", w_loss, "loss"),
+                    M::new("weighted_loss", self.ct.get_total_weighted_loss(), "loss"),
+                ], &self.prob);
                 n_iter += 1;
             }
 
@@ -136,6 +153,9 @@ impl Separator {
                 n_strikes = 0;
             }
             self.rollback(&min_loss_sol.0, Some(&min_loss_sol.1));
+            report_step(sol_listener, "separation_rollback", "restored", "restore_best_loss_keep_weights", &[
+                M::new("strikes", n_strikes as f64, "count"), M::new("loss", self.ct.get_total_loss(), "loss"),
+            ], &self.prob);
         }
         let secs = start.elapsed().as_secs_f32();
         log!(self.config.log_level, "[SEP] finished, evals/s: {} K, evals/move: {}, moves/s: {}, iter/s: {}, #workers: {}, total {:.3}s",
@@ -153,14 +173,28 @@ impl Separator {
             total_moves: sep_stats.total_moves,
             iterations: n_iter,
         });
+        if sol_listener.wants_optimization_steps() {
+            sol_listener.report_optimization_step(crate::util::optimization_step::OptimizationStep {
+                operation: "separation_end",
+                outcome: if min_loss_sol.1.get_total_loss() == 0.0 { "feasible" } else { "infeasible" },
+                reason: if min_loss_sol.1.get_total_loss() == 0.0 { "zero_collision_loss" } else if n_strikes >= self.config.strike_limit { "strike_limit" } else { "termination_observed" },
+                metrics: &[
+                    M::new("iterations", completed_iterations as f64, "count"),
+                    M::new("evaluations", sep_stats.total_evals as f64, "count"),
+                    M::new("moves", sep_stats.total_moves as f64, "count"),
+                    M::new("loss", min_loss_sol.1.get_total_loss(), "loss"),
+                ],
+            }, &min_loss_sol.0, &self.instance);
+        }
 
         // Return the best solution found: a feasible one if separation was successful, otherwise the 'least' infeasible one
         (min_loss_sol.0, min_loss_sol.1)
     }
 
     /// Algorithm 10 from https://doi.org/10.48550/arXiv.2509.13329
-    fn move_items_multi(&mut self, timeout: Option<Instant>, kill: &(dyn Fn() -> bool + Sync)) -> SepStats {
+    fn move_items_multi(&mut self, timeout: Option<Instant>, kill: &(dyn Fn() -> bool + Sync), sol_listener: &mut impl SolutionListener, iteration: usize) -> SepStats {
         let master_sol = self.prob.save();
+        let record_moves = sol_listener.wants_optimization_steps();
 
         // Define the parallel execution closure
         let mut separate_multi = || -> SepStats {
@@ -168,7 +202,7 @@ impl Separator {
                 // Sync the workers with the master
                 worker.load(&master_sol, &self.ct);
                 // Let all of them run `move_items` with unique random orderings in which the items are moved
-                worker.move_items(timeout, kill)
+                worker.move_items(timeout, kill, record_moves)
             }).sum()
         };
 
@@ -181,10 +215,27 @@ impl Separator {
         debug!("[MOD] optimizers w_o's: {:?}",self.workers.iter().map(|opt| opt.ct.get_total_weighted_loss()).collect_vec());
 
         // Check what run yielded the best solution (lowest collision quantification)
-        let (best_sol, best_ct) = self.workers.iter_mut()
-            .min_by_key(|opt| OrderedFloat(opt.ct.get_total_weighted_loss()))
-            .map(|opt| (opt.prob.save(), &opt.ct))
-            .unwrap();
+        let best_index = self.workers.iter().enumerate()
+            .min_by_key(|(_, opt)| OrderedFloat(opt.ct.get_total_weighted_loss()))
+            .map(|(index, _)| index).unwrap();
+        // Report all completed worker candidates in worker-index order after the barrier.
+        // This order is not their wall-clock completion order.
+        for (index, worker) in self.workers.iter().enumerate() {
+            if record_moves {
+                sol_listener.report_optimization_step(crate::util::optimization_step::OptimizationStep {
+                    operation: "worker_start", outcome: "start", reason: "copy_master_layout",
+                    metrics: &[M::new("iteration", iteration as f64, "index"), M::new("worker", index as f64, "index")],
+                }, &master_sol, &self.instance);
+                for movement in &worker.trace_moves { sol_listener.report_item_move(movement, &self.instance); }
+            }
+            report_step(sol_listener, "worker_candidate", if index == best_index { "selected" } else { "discarded" }, "minimum_weighted_loss", &[
+                M::new("iteration", iteration as f64, "index"), M::new("worker", index as f64, "index"),
+                M::new("loss", worker.ct.get_total_loss(), "loss"),
+                M::new("weighted_loss", worker.ct.get_total_weighted_loss(), "loss"),
+            ], &worker.prob);
+        }
+        let best_sol = self.workers[best_index].prob.save();
+        let best_ct = &self.workers[best_index].ct;
 
         // Load this 'best' solution into the master, effectively throwing away all other work.
         self.prob.restore(&best_sol);
@@ -261,6 +312,7 @@ impl Separator {
         //rebuild the workers
         self.workers.iter_mut().for_each(|opt| {
             *opt = SeparatorWorker {
+                trace_moves: Vec::new(),
                 instance: self.instance.clone(),
                 prob: self.prob.clone(),
                 ct: self.ct.clone(),
