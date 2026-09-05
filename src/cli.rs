@@ -83,7 +83,7 @@ pub fn run() -> Result<()>{
     );
 
     info!("[MAIN] loaded instance {} with #{} items", ext_instance.name, instance.total_item_qty());
-    
+
     let mut svg_exporter = {
         let final_svg_path = Some(format!("{OUTPUT_DIR}/final_{}.svg", ext_instance.name));
 
@@ -96,14 +96,14 @@ pub fn run() -> Result<()>{
             true => Some(format!("{LIVE_DIR}/.live_solution.svg")),
             false => None
         };
-        
+
         SvgExporter::new(
             final_svg_path,
             intermediate_svg_dir,
             live_svg_path
         )
     };
-    
+
     let mut ctrlc_terminator = CtrlCTerminator::new();
 
     let solution = optimize(
