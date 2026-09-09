@@ -39,10 +39,35 @@ pub struct Separator {
 }
 
 impl Separator {
-    pub fn new(instance: SPInstance, prob: SPProblem, mut rng: Xoshiro256PlusPlus, config: SeparatorConfig) -> Self {
-        let ct = CollisionTracker::new(&prob.layout);
-        let workers = (0..config.n_workers).map(|_|
-            SeparatorWorker {
+    pub fn new(
+        instance: SPInstance,
+        prob: SPProblem,
+        rng: Xoshiro256PlusPlus,
+        config: SeparatorConfig,
+    ) -> Self {
+        Self::new_constrained(
+            instance,
+            prob,
+            rng,
+            config,
+            crate::constraints::PlacementConstraints::default(),
+        )
+        .expect("empty placement constraints")
+    }
+
+    pub fn new_constrained(
+        instance: SPInstance,
+        prob: SPProblem,
+        mut rng: Xoshiro256PlusPlus,
+        config: SeparatorConfig,
+        constraints: crate::constraints::PlacementConstraints,
+    ) -> Result<Self, crate::constraints::ConstraintError> {
+        constraints.validate_instance(&instance)?;
+        constraints.validate_instance(&prob.instance)?;
+        constraints.validate_layout(&prob.layout)?;
+        let ct = CollisionTracker::new_constrained(&prob.layout, std::sync::Arc::new(constraints));
+        let workers = (0..config.n_workers)
+            .map(|_| SeparatorWorker {
                 trace_moves: Vec::new(),
                 instance: instance.clone(),
                 prob: prob.clone(),
@@ -59,7 +84,7 @@ impl Separator {
             Some(rayon::ThreadPoolBuilder::new().num_threads(config.n_workers).build().unwrap())
         };
 
-        Self {
+        Ok(Self {
             prob,
             instance,
             rng,
@@ -67,7 +92,7 @@ impl Separator {
             workers,
             config,
             thread_pool: pool,
-        }
+        })
     }
 
     /// Algorithm 9 from https://doi.org/10.48550/arXiv.2509.13329
@@ -244,7 +269,13 @@ impl Separator {
         sep_report
     }
 
-    pub fn rollback(&mut self, sol: &SPSolution, ots: Option<&CTSnapshot>) {
+    pub fn rollback(&mut self, sol: &SPSolution, ots: Option<&CTSnapshot>) -> bool {
+        if !self.ct.constraints.matches_solution(sol) {
+            return false;
+        }
+        if ots.is_some_and(|old| old.constraints != self.ct.constraints) {
+            return false;
+        }
         debug_assert!(sol.strip_width() == self.prob.strip_width());
         self.prob.restore(sol);
 
@@ -255,12 +286,23 @@ impl Separator {
             }
             None => {
                 //otherwise, rebuild it
-                self.ct = CollisionTracker::new(&self.prob.layout);
+                self.ct = CollisionTracker::new_constrained(
+                    &self.prob.layout,
+                    self.ct.constraints.clone(),
+                );
             }
         }
+        true
     }
 
     pub fn move_item(&mut self, pk: PItemKey, d_transf: DTransformation) -> PItemKey {
+        if self
+            .ct
+            .constraints
+            .is_fixed(self.prob.layout.placed_items[pk].item_id)
+        {
+            return pk;
+        }
         debug_assert!(tracker_matches_layout(&self.ct, &self.prob.layout));
 
         let item_id = self.prob.layout.placed_items[pk].item_id;
@@ -287,14 +329,23 @@ impl Separator {
         new_pk
     }
 
-    pub fn change_strip_width(&mut self, new_width: f32, split_position: Option<f32>) {
+    pub fn change_strip_width(&mut self, new_width: f32, split_position: Option<f32>) -> bool {
+        if new_width < self.ct.constraints.minimum_width(&self.prob) {
+            return false;
+        }
         //if no split position is provided, use the center of the strip
         let split_position = split_position.unwrap_or(self.prob.strip_width() / 2.0);
         let delta = new_width - self.prob.strip_width();
 
         //shift all items right of the split position
-        let items_to_shift = self.prob.layout.placed_items.iter()
-            .filter(|(_, pi)| pi.shape.centroid().0 > split_position)
+        let items_to_shift = self
+            .prob
+            .layout
+            .placed_items
+            .iter()
+            .filter(|(_, pi)| {
+                !self.ct.constraints.is_fixed(pi.item_id) && pi.shape.centroid().0 > split_position
+            })
             .map(|(k, pi)| (k, pi.d_transf))
             .collect_vec();
 
@@ -307,7 +358,7 @@ impl Separator {
         self.prob.change_strip_width(new_width);
 
         //rebuild the collision tracker
-        self.ct = CollisionTracker::new(&self.prob.layout);
+        self.ct = CollisionTracker::new_constrained(&self.prob.layout, self.ct.constraints.clone());
 
         //rebuild the workers
         self.workers.iter_mut().for_each(|opt| {
@@ -321,5 +372,6 @@ impl Separator {
             };
         });
         debug!("[SEP] changed strip width to {:.3}", new_width);
+        true
     }
 }

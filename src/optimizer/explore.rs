@@ -80,11 +80,53 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
                 Some(tw) if tw < current_width => tw,
                 _ => current_width * (1.0 - config.shrink_step),
             };
-            info!("[EXPL] shrinking strip by {}%: {:.3} -> {:.3}", config.shrink_step * 100.0, current_width, next_width);
-            sep.change_strip_width(next_width, None);
-            report_step(sol_listener, "exploration_shrink", "attempt", "search_narrower_strip", &[
-                M::new("width_before", current_width, "mm"), M::new("width", next_width, "mm"),
-            ], &sep.prob);
+            // 固定跨度是可尝试的边界；不能因为步长越过它而跳过清空窄尾段的机会。
+            let next_width = if sep.ct.constraints.is_empty() {
+                next_width
+            } else {
+                next_width.max(sep.ct.constraints.minimum_width(&sep.prob))
+            };
+            if !sep.ct.constraints.is_empty() && next_width >= current_width {
+                report_step(
+                    sol_listener,
+                    "exploration_stop",
+                    "stopped",
+                    "fixed_extent",
+                    &[],
+                    &sep.prob,
+                );
+                reported_stop = true;
+                break;
+            }
+            info!(
+                "[EXPL] shrinking strip by {}%: {:.3} -> {:.3}",
+                config.shrink_step * 100.0,
+                current_width,
+                next_width
+            );
+            if !sep.change_strip_width(next_width, None) {
+                report_step(
+                    sol_listener,
+                    "exploration_stop",
+                    "stopped",
+                    "fixed_extent",
+                    &[],
+                    &sep.prob,
+                );
+                reported_stop = true;
+                break;
+            }
+            report_step(
+                sol_listener,
+                "exploration_shrink",
+                "attempt",
+                "search_narrower_strip",
+                &[
+                    M::new("width_before", current_width, "mm"),
+                    M::new("width", next_width, "mm"),
+                ],
+                &sep.prob,
+            );
             current_width = next_width;
             infeas_sol_pool.clear();
         } else {
@@ -139,9 +181,28 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
     feasible_sols
 }
 
-fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig, sol_listener: &mut impl SolutionListener) {
-    if sep.prob.layout.placed_items.len() < 2 {
-        report_step(sol_listener, "disrupt", "skipped", "fewer_than_two_items", &[], &sep.prob);
+fn disrupt_solution(
+    sep: &mut Separator,
+    config: &ExplorationConfig,
+    sol_listener: &mut impl SolutionListener,
+) {
+    if sep
+        .prob
+        .layout
+        .placed_items
+        .values()
+        .filter(|pi| !sep.ct.constraints.is_fixed(pi.item_id))
+        .count()
+        < 2
+    {
+        report_step(
+            sol_listener,
+            "disrupt",
+            "skipped",
+            "fewer_than_two_items",
+            &[],
+            &sep.prob,
+        );
         warn!("[DSRP] cannot disrupt solution with less than 2 items");
         return;
     }
@@ -158,6 +219,7 @@ fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig, sol_listene
         .instance
         .items
         .iter()
+        .filter(|(item, _)| !sep.ct.constraints.is_fixed(item.id))
         .map(|(item, quantity)| item.shape_cd.surrogate().convex_hull_area * (*quantity as f32))
         .sum();
 
@@ -169,7 +231,10 @@ fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig, sol_listene
         .instance
         .items
         .iter()
-        .sorted_by_key(|(item, _)| Reverse(OrderedFloat(item.shape_cd.surrogate().convex_hull_area)))
+        .filter(|(item, _)| !sep.ct.constraints.is_fixed(item.id))
+        .sorted_by_key(|(item, _)| {
+            Reverse(OrderedFloat(item.shape_cd.surrogate().convex_hull_area))
+        })
         .peekable();
 
     let mut cumulative_ch_area = 0.0;
@@ -190,7 +255,12 @@ fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig, sol_listene
 
     // Step 2: Select two 'large' items and 'swap' them.
 
-    let large_items = sep.prob.layout.placed_items.iter()
+    let large_items = sep
+        .prob
+        .layout
+        .placed_items
+        .iter()
+        .filter(|(_, pi)| !sep.ct.constraints.is_fixed(pi.item_id))
         .filter(|(_, pi)| pi.shape.surrogate().convex_hull_area >= ch_area_cutoff);
 
     //Choose a first item with a large enough convex hull
@@ -207,6 +277,7 @@ fn disrupt_solution(sep: &mut Separator, config: &ExplorationConfig, sol_listene
         .choose(&mut sep.rng)
         .or_else(|| {
             sep.prob.layout.placed_items.iter()
+                .filter(|(_,pi)|!sep.ct.constraints.is_fixed(pi.item_id))
                 .filter(|(pk, _)| *pk != pk1) // Ensure the second item is not the same as the first
                 .choose(&mut sep.rng)
         }) // As a fallback, choose any item

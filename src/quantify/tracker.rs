@@ -12,6 +12,7 @@ use slotmap::SecondaryMap;
 /// It also stores the weights for every pair of hazards and is used as a cache for collisions.
 #[derive(Debug, Clone)]
 pub struct CollisionTracker {
+    pub constraints: std::sync::Arc<crate::constraints::PlacementConstraints>,
     pub size: usize,
     pub pk_idx_map: SecondaryMap<PItemKey, usize>,
     pub pair_collisions: PairMatrix,
@@ -22,10 +23,18 @@ pub type CTSnapshot = CollisionTracker;
 
 impl CollisionTracker {
     pub fn new(l: &Layout) -> Self {
+        Self::new_constrained(l, std::sync::Arc::default())
+    }
+
+    pub fn new_constrained(
+        l: &Layout,
+        constraints: std::sync::Arc<crate::constraints::PlacementConstraints>,
+    ) -> Self {
         let size = l.placed_items.len();
 
         // Create the tracker
         let mut ot = Self {
+            constraints,
             size,
             pk_idx_map: l.placed_items.keys().enumerate()
                 .map(|(i, pk)| (pk, i))
@@ -73,6 +82,9 @@ impl CollisionTracker {
                     self.pair_collisions[(idx, idx_other)].loss = loss;
                 }
                 HazardEntity::Exterior => {
+                    if self.constraints.is_boundary(pi.item_id) {
+                        continue;
+                    }
                     let loss = quantify_collision_poly_container(shape, l.container.outer_cd.bbox);
                     assert!(loss > 0.0, "loss for a collision should be > 0.0");
                     self.container_collisions[idx].loss = loss;

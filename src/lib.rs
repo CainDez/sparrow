@@ -13,6 +13,7 @@ pub mod util;
 pub mod config;
 pub mod eval;
 pub mod consts;
+pub mod constraints;
 
 pub static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 

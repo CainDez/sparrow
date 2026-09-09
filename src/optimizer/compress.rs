@@ -42,6 +42,19 @@ pub fn compression_phase(
             report_step(sol_listener, "compression_stop", "stopped", "termination_observed", &[], &sep.prob);
             break;
         }
+        if !sep.ct.constraints.is_empty()
+            && best_sol.strip_width() <= sep.ct.constraints.minimum_width(&sep.prob)
+        {
+            report_step(
+                sol_listener,
+                "compression_stop",
+                "stopped",
+                "fixed_extent",
+                &[],
+                &sep.prob,
+            );
+            break;
+        }
         let step = shrink_step_size(n_failed_attempts);
         if !(step >= config.shrink_range.1) {
             report_step(sol_listener, "compression_stop", "stopped", "minimum_shrink_step", &[M::new("shrink_ratio", step, "ratio")], &sep.prob);
@@ -73,12 +86,36 @@ fn attempt_to_compress(sep: &mut Separator, init_sol: &SPSolution, r_shrink: f32
 
     // Shrink the container by the provided amount at a random position
     let new_width = init_sol.strip_width() * (1.0 - r_shrink);
+    let new_width = if sep.ct.constraints.is_empty() {
+        new_width
+    } else {
+        new_width.max(sep.ct.constraints.minimum_width(&sep.prob))
+    };
     let split_pos = sep.rng.random_range(0.0..sep.prob.strip_width());
-    sep.change_strip_width(new_width, Some(split_pos));
-    report_step(sol_listener, "compression_shrink", "attempt", "random_split", &[
-        M::new("width_before", init_sol.strip_width(), "mm"), M::new("width", new_width, "mm"),
-        M::new("split_position", split_pos, "mm"), M::new("shrink_ratio", r_shrink, "ratio"),
-    ], &sep.prob);
+    if !sep.change_strip_width(new_width, Some(split_pos)) {
+        report_step(
+            sol_listener,
+            "compression_shrink",
+            "rejected",
+            "fixed_extent",
+            &[],
+            &sep.prob,
+        );
+        return None;
+    }
+    report_step(
+        sol_listener,
+        "compression_shrink",
+        "attempt",
+        "random_split",
+        &[
+            M::new("width_before", init_sol.strip_width(), "mm"),
+            M::new("width", new_width, "mm"),
+            M::new("split_position", split_pos, "mm"),
+            M::new("shrink_ratio", r_shrink, "ratio"),
+        ],
+        &sep.prob,
+    );
 
     // Try to separate layout, if all collisions are eliminated, return the solution
     let (compacted_sol, ot) = sep.separate(term, sol_listener);

@@ -39,8 +39,18 @@ impl SeparatorWorker {
         self.trace_moves.clear();
         let trace_start = record_moves.then(Instant::now);
         // Collect all colliding items in a random order
-        let candidates = self.prob.layout.placed_items.keys()
-            .filter(|pk| self.ct.get_loss(*pk) > 0.0)
+        let candidates = self
+            .prob
+            .layout
+            .placed_items
+            .keys()
+            .filter(|pk| {
+                !self
+                    .ct
+                    .constraints
+                    .is_fixed(self.prob.layout.placed_items[*pk].item_id)
+                    && self.ct.get_loss(*pk) > 0.0
+            })
             .collect_vec()
             .tap_mut(|v| v.shuffle(&mut self.rng));
 
@@ -100,6 +110,13 @@ impl SeparatorWorker {
     }
 
     pub fn move_item(&mut self, pk: PItemKey, d_transf: DTransformation) -> PItemKey {
+        if self
+            .ct
+            .constraints
+            .is_fixed(self.prob.layout.placed_items[pk].item_id)
+        {
+            return pk;
+        }
         debug_assert!(tracker_matches_layout(&self.ct, &self.prob.layout));
 
         let item = self.instance.item(self.prob.layout.placed_items[pk].item_id);
