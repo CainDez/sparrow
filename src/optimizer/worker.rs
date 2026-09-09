@@ -85,13 +85,15 @@ impl SeparatorWorker {
                 };
 
                 // Move the item to the new position
+                let old_dt = self.prob.layout.placed_items[pk].d_transf;
+                let changed = old_dt.rotation() != new_dt.rotation() || old_dt.translation() != new_dt.translation();
                 let new_pk = self.move_item(pk, new_dt);
                 if let Some((before, loss, weighted_loss)) = trace_before {
                     self.trace_moves.push(ItemMove { item_id, before, after: Some(new_dt), loss_before: loss, loss_after: self.ct.get_loss(new_pk),
                         weighted_loss_before: weighted_loss, weighted_loss_after: self.ct.get_weighted_loss(new_pk), evaluations: n_evals,
                         elapsed_ms: trace_start.unwrap().elapsed().as_secs_f64()*1000.0 });
                 }
-                total_moves += 1;
+                total_moves += usize::from(changed);
             }
         }
         SepStats { total_moves, total_evals }

@@ -71,7 +71,7 @@ fn start_optimizer(
     rng: Xoshiro256PlusPlus,
     signals: TuiSignals,
     updates: Sender<DashboardUpdate>,
-) -> JoinHandle<SPSolution> {
+) -> JoinHandle<Option<SPSolution>> {
     thread::Builder::new()
         .name("optimizer".into())
         .spawn(move || {
@@ -92,7 +92,7 @@ fn run_dashboard(
     terminal: &mut DefaultTerminal,
     updates: Receiver<DashboardUpdate>,
     logs: Receiver<LogEntry>,
-    worker: JoinHandle<SPSolution>,
+    worker: JoinHandle<Option<SPSolution>>,
     signals: TuiSignals,
     final_output: (&SPInstance, &ExtSPInstance),
     budget: SearchBudget,
@@ -114,7 +114,8 @@ fn run_dashboard(
                 .take()
                 .unwrap()
                 .join()
-                .map_err(|_| anyhow!("optimizer thread panicked"))?;
+                .map_err(|_| anyhow!("optimizer thread panicked"))?
+                .ok_or_else(|| anyhow!("no complete feasible solution found within the search budget"))?;
             export_final_solution(&final_solution, instance, ext_instance)?;
             solution = Some(final_solution);
             dashboard.finish();

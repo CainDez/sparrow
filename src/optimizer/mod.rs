@@ -19,6 +19,7 @@ pub mod explore;
 pub mod compress;
 
 ///Algorithm 11 from https://doi.org/10.48550/arXiv.2509.13329
+/// 未得到完整、可行的探索候选时返回 None；不能把不合格的初始布局用于压缩或最终回退。
 pub fn optimize(
     instance: SPInstance,
     mut rng: Xoshiro256PlusPlus,
@@ -27,7 +28,7 @@ pub fn optimize(
     expl_config: &ExplorationConfig,
     cmpr_config: &CompressionConfig,
     initial_solution: Option<&SPSolution>
-) -> SPSolution {
+) -> Option<SPSolution> {
     let mut next_rng = || Xoshiro256PlusPlus::seed_from_u64(rng.next_u64());
 
     // Initialization belongs to the exploration phase and must consume the
@@ -60,7 +61,7 @@ pub fn optimize(
         expl_config,
         has_initial_solution,
     );
-    let final_explore_sol = solutions.last().unwrap().clone();
+    let final_explore_sol = solutions.last()?.clone();
 
     // Start the compression phase from the final solution from the exploration phase
     sol_listener.report_phase(OptimizationPhase::Compression);
@@ -78,5 +79,5 @@ pub fn optimize(
     sol_listener.report(ReportType::Final, &cmpr_sol, &instance);
 
     // Return the final compressed solution
-    cmpr_sol
+    Some(cmpr_sol)
 }

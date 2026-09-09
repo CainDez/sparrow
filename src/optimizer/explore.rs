@@ -23,14 +23,29 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
     let mut current_width = sep.prob.strip_width();
     let mut best_width = current_width;
 
-    let mut feasible_sols = vec![sep.prob.save()];
-
-    sol_listener.report(ReportType::ExplFeas, &feasible_sols[0], instance);
+    // 热启动和被取消的 LBF 都不保证完整、无碰撞；不得把它们当作可行证书。
+    let complete = instance.items.iter().all(|(item, quantity)| {
+        sep.prob.layout.placed_items.values().filter(|pi| pi.item_id == item.id).count() == *quantity
+    });
+    let allowed_poses = sep.prob.layout.placed_items.values().all(|pi| {
+        let allowed = convert_sample_to_closest_feasible(pi.d_transf, instance.item(pi.item_id));
+        jagua_rs::geometry::normalize_rotation(pi.d_transf.rotation() - allowed.rotation()).abs() <= 1e-5
+    });
+    if !complete || !allowed_poses {
+        report_step(sol_listener, "exploration_stop", "stopped", "invalid_initial_identity_or_rotation", &[], &sep.prob);
+        return Vec::new();
+    }
+    let initial_feasible = complete && sep.ct.get_total_loss() == 0.0;
+    let mut feasible_sols = Vec::new();
+    if initial_feasible {
+        feasible_sols.push(sep.prob.save());
+        sol_listener.report(ReportType::ExplFeas, &feasible_sols[0], instance);
+    }
     info!("[EXPL] starting optimization with initial width: {:.3} ({:.3}%)",current_width,sep.prob.density() * 100.0);
 
     // Feasibility-oracle calls frequently start from an already feasible LBF
     // or warm-start layout. Do not enter the expensive separator in that case.
-    if allow_initial_target_stop && target_reached(current_width, config.target_width) {
+    if initial_feasible && allow_initial_target_stop && target_reached(current_width, config.target_width) {
         report_step(sol_listener, "exploration_stop", "stopped", "initial_target_reached", &[], &sep.prob);
         info!("[EXPL] initial solution already reaches target width ({:.3}), terminating", current_width);
         return feasible_sols;
@@ -44,9 +59,9 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
         let local_best = sep.separate(term, sol_listener);
         let total_loss = local_best.1.get_total_loss();
 
-        if total_loss == 0.0 {
+        if complete && total_loss == 0.0 {
             // If successfully separated
-            if current_width < best_width {
+            if feasible_sols.is_empty() || current_width < best_width {
                 info!("[EXPL] feasible solution found! (width: {:.3}, dens: {:.3}%)",current_width,sep.prob.density() * 100.0);
                 best_width = current_width;
                 feasible_sols.push(local_best.0.clone());
@@ -115,7 +130,11 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
     }
 
     if !reported_stop { report_step(sol_listener, "exploration_stop", "stopped", "termination_observed", &[], &sep.prob); }
-    info!("[EXPL] finished, best feasible solution: width: {:.3} ({:.3}%)",best_width,feasible_sols.last().unwrap().density(instance) * 100.0);
+    if let Some(best) = feasible_sols.last() {
+        info!("[EXPL] finished, best feasible solution: width: {:.3} ({:.3}%)",best_width,best.density(instance) * 100.0);
+    } else {
+        info!("[EXPL] finished without a complete feasible solution");
+    }
 
     feasible_sols
 }
