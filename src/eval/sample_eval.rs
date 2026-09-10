@@ -38,6 +38,10 @@ impl Eq for SampleEval {}
 
 /// Simple trait for types that can evaluate samples
 pub trait SampleEvaluator {
+    fn sample_regions(&self) -> Option<Vec<jagua_rs::geometry::primitives::Rect>> {
+        None
+    }
+
     fn evaluate_sample(&mut self, dt: DTransformation, upper_bound: Option<SampleEval>) -> SampleEval;
 
     fn n_evals(&self) -> usize;

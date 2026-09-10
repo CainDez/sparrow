@@ -9,6 +9,7 @@ use jagua_rs::geometry::primitives::SPolygon;
 use jagua_rs::geometry::DTransformation;
 
 pub struct SeparationEvaluator<'a> {
+    constraints: &'a crate::constraints::PlacementConstraints,
     layout: &'a Layout,
     item: &'a Item,
     collector: BasicHazardCollector,
@@ -35,6 +36,7 @@ impl<'a> SeparationEvaluator<'a> {
         );
 
         Self {
+            constraints: &ct.constraints,
             layout,
             item,
             collector: BasicHazardCollector::with_capacity(layout.placed_items.len() + 1),
@@ -47,6 +49,9 @@ impl<'a> SeparationEvaluator<'a> {
 }
 
 impl<'a> SampleEvaluator for SeparationEvaluator<'a> {
+    fn sample_regions(&self) -> Option<Vec<jagua_rs::geometry::primitives::Rect>> {
+        self.constraints.sample_regions(self.layout.container.outer_cd.bbox)
+    }
     /// Evaluates a transformation. An upper bound can be provided to early terminate the process.
     /// Algorithm 7 from https://doi.org/10.48550/arXiv.2509.13329
     fn evaluate_sample(&mut self, dt: DTransformation, upper_bound: Option<SampleEval>) -> SampleEval {
@@ -62,6 +67,9 @@ impl<'a> SampleEvaluator for SeparationEvaluator<'a> {
         let shape = self
             .shape_buff
             .transform_from(self.item.shape_cd.as_ref(), &dt.compose());
+        if !self.constraints.allows_bbox(self.item.id, shape.bbox) {
+            return SampleEval::Invalid;
+        }
         self.collector.clear();
         // Mark the moving item's existing hazard as already collected so traversal skips it.
         self.collector.insert(self.current_hazard.0, self.current_hazard.1);

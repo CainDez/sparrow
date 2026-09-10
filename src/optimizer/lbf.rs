@@ -191,7 +191,9 @@ impl LBFBuilder {
 
         match best_sample {
             Some((d_transf, SampleEval::Clear { .. })) => {
-                Some(SPPlacement { item_id, d_transf })
+                self.constraints
+                    .allows_pose(item, d_transf)
+                    .then_some(SPPlacement { item_id, d_transf })
             }
             _ => None
         }

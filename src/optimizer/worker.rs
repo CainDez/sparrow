@@ -28,6 +28,10 @@ pub struct SeparatorWorker {
 
 impl SeparatorWorker {
     pub fn load(&mut self, sol: &SPSolution, ct: &CollisionTracker) {
+        assert!(
+            !ct.constraints.has_hard_x_barriers() || ct.constraints.matches_solution(sol),
+            "工作线程不得恢复跨挡板布局"
+        );
         // restores the state of the worker to the given solution and accompanying tracker
         debug_assert!(sol.strip_width() == self.prob.strip_width());
         self.prob.restore(sol);
@@ -120,6 +124,9 @@ impl SeparatorWorker {
         debug_assert!(tracker_matches_layout(&self.ct, &self.prob.layout));
 
         let item = self.instance.item(self.prob.layout.placed_items[pk].item_id);
+        if !self.ct.constraints.allows_pose(item, d_transf) {
+            return pk;
+        }
 
         let (old_l, old_w_l) = (self.ct.get_loss(pk), self.ct.get_weighted_loss(pk));
 

@@ -75,6 +75,182 @@ fn sep(p: SPProblem, c: PlacementConstraints) -> Separator {
     .unwrap()
 }
 
+fn hard_barrier_problem() -> (SPProblem, PlacementConstraints) {
+    let mut p = problem(&[(2., 100.), (10., 10.), (10., 10.)]);
+    put(&mut p, 0, 100., 0.);
+    put(&mut p, 1, 105., 20.);
+    put(&mut p, 2, 105., 20.);
+    let c = PlacementConstraints::new(&p.instance, vec![FixedPlacement::boundary(0, pose(&p, 0))])
+        .unwrap()
+        .with_hard_x_barriers(&p.instance)
+        .unwrap();
+    (p, c)
+}
+
+#[test]
+fn hard_barrier_rejects_crossing_pose_but_allows_atomic_cross_board_move() {
+    let (p, c) = hard_barrier_problem();
+    let mut s = sep(p, c.clone());
+    let key = s
+        .prob
+        .layout
+        .placed_items
+        .iter()
+        .find(|(_, pi)| pi.item_id == 1)
+        .unwrap()
+        .0;
+    let before = pose(&s.prob, 1);
+    assert_eq!(s.move_item(key, DTransformation::new(0., (96., 20.))), key);
+    assert_eq!(pose(&s.prob, 1), before);
+    let key = s.move_item(key, DTransformation::new(0., (70., 20.)));
+    assert_eq!(pose(&s.prob, 1).translation().0, 70.);
+    assert!(c.matches_solution(&s.prob.save()));
+    // 外框仍为软约束：不会误把挡板规则扩大成完整无碰撞规则。
+    s.move_item(key, DTransformation::new(0., (-20., 20.)));
+    assert_eq!(pose(&s.prob, 1).translation().0, -20.);
+}
+
+#[test]
+fn hard_barrier_guards_shrink_worker_evaluation_and_corrupt_rollback() {
+    use sparrow::eval::sample_eval::{SampleEval, SampleEvaluator};
+    use sparrow::eval::sep_evaluator::SeparationEvaluator;
+    let (p, c) = hard_barrier_problem();
+    let mut s = sep(p, c.clone());
+    // 平移幅度会使位于 105 的副本落在挡板上；宽度仍可缩，非法移动须拒绝。
+    assert!(s.change_strip_width(190., Some(100.)));
+    assert_eq!(pose(&s.prob, 1).translation().0, 105.);
+    assert!(c.matches_solution(&s.prob.save()));
+    let key = s
+        .prob
+        .layout
+        .placed_items
+        .iter()
+        .find(|(_, pi)| pi.item_id == 1)
+        .unwrap()
+        .0;
+    let mut evaluator =
+        SeparationEvaluator::new(&s.prob.layout, &s.instance.items[1].0, key, &s.ct);
+    assert_eq!(
+        evaluator.evaluate_sample(DTransformation::new(0., (96., 20.)), None),
+        SampleEval::Invalid
+    );
+    let mut bad = s.prob.clone();
+    bad.remove_item(key);
+    put(&mut bad, 1, 96., 20.);
+    assert!(!s.rollback(&bad.save(), None));
+    let mut t = BasicTerminator::new();
+    t.new_timeout(Duration::from_millis(300));
+    s.separate(&t, &mut DummySolListener);
+    assert!(c.matches_solution(&s.prob.save()));
+    assert!(s.workers.iter().all(|w| c.matches_solution(&w.prob.save())));
+}
+
+#[test]
+fn hard_barrier_sampler_covers_both_boards_and_allowed_rotations() {
+    use sparrow::sample::uniform_sampler::UniformBBoxSampler;
+    let (p, c) = hard_barrier_problem();
+    let mut piece = item(1, 90., 40.);
+    piece.allowed_rotation = RotationRange::Discrete(vec![0., std::f32::consts::FRAC_PI_2]);
+    let bbox = p.layout.container.outer_cd.bbox;
+    let regions = c.sample_regions(bbox).unwrap();
+    assert_eq!(regions.len(), 2);
+    let sampler = UniformBBoxSampler::new_in_regions(bbox, &piece, &regions).unwrap();
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+    let mut seen = [[false; 2]; 2];
+    for _ in 0..500 {
+        let pose = sampler.sample(&mut rng);
+        assert!(c.allows_pose(&piece, pose));
+        seen[usize::from(pose.translation().0 > 100.)][usize::from(pose.rotation() != 0.)] = true;
+    }
+    assert!(seen.iter().flatten().all(|v| *v));
+}
+
+#[test]
+fn hard_barrier_projection_handles_large_coordinates_and_preserves_rotation() {
+    let mut p = problem(&[(2., 100.), (20., 30.)]);
+    p.change_strip_width(20000.);
+    put(&mut p, 0, 13000., 0.);
+    let c = PlacementConstraints::new(&p.instance, vec![FixedPlacement::boundary(0, pose(&p, 0))])
+        .unwrap()
+        .with_hard_x_barriers(&p.instance)
+        .unwrap();
+    let before = DTransformation::new(0., (13001.998, 17.));
+    assert!(!c.allows_pose(&p.instance.items[1].0, before));
+    let after = c.project_pose(&p.instance.items[1].0, before).unwrap();
+    assert!(c.allows_pose(&p.instance.items[1].0, after));
+    assert_eq!(
+        (after.rotation(), after.translation().1),
+        (before.rotation(), before.translation().1)
+    );
+    assert!((after.translation().0 - before.translation().0).abs() < 0.01);
+    assert_eq!(
+        c.project_pose(&p.instance.items[1].0, after).unwrap(),
+        after
+    );
+}
+
+#[test]
+fn hard_barrier_every_reported_search_state_respects_boundaries() {
+    use jagua_rs::probs::spp::entities::SPSolution;
+    use sparrow::util::optimization_step::OptimizationStep;
+    struct Audit {
+        constraints: PlacementConstraints,
+        states: usize,
+    }
+    impl SolutionListener for Audit {
+        fn wants_optimization_steps(&self) -> bool {
+            true
+        }
+        fn report(&mut self, _: ReportType, solution: &SPSolution, _: &SPInstance) {
+            assert!(self.constraints.matches_solution(solution));
+        }
+        fn report_optimization_step(
+            &mut self,
+            _: OptimizationStep<'_>,
+            solution: &SPSolution,
+            _: &SPInstance,
+        ) {
+            assert!(self.constraints.matches_solution(solution));
+            self.states += 1;
+        }
+        fn report_item_move(
+            &mut self,
+            movement: &sparrow::util::optimization_step::ItemMove,
+            instance: &SPInstance,
+        ) {
+            if let Some(pose) = movement.after {
+                assert!(
+                    self.constraints
+                        .allows_pose(&instance.items[movement.item_id].0, pose)
+                );
+            }
+        }
+    }
+    let (p, c) = hard_barrier_problem();
+    let mut cfg = DEFAULT_SPARROW_CONFIG;
+    cfg.expl_cfg.time_limit = Duration::from_millis(200);
+    cfg.cmpr_cfg.time_limit = Duration::from_millis(100);
+    cfg.expl_cfg.separator_config.iter_no_imprv_limit = 5;
+    cfg.cmpr_cfg.separator_config.iter_no_imprv_limit = 5;
+    let mut audit = Audit {
+        constraints: c.clone(),
+        states: 0,
+    };
+    let result = optimize_constrained(
+        p.instance.clone(),
+        Xoshiro256PlusPlus::seed_from_u64(42),
+        &mut audit,
+        &mut BasicTerminator::new(),
+        &cfg.expl_cfg,
+        &cfg.cmpr_cfg,
+        Some(&p.save()),
+        c,
+    )
+    .unwrap();
+    assert!(result.is_some());
+    assert!(audit.states > 10);
+}
+
 #[test]
 fn fixed_pose_survives_shrink_move_and_rollback() {
     let mut p = problem(&[(10., 10.), (10., 10.)]);

@@ -6,6 +6,7 @@ use jagua_rs::geometry::DTransformation;
 use jagua_rs::geometry::geo_traits::Transformable;
 use jagua_rs::probs::spp::entities::{SPInstance, SPPlacement, SPProblem, SPSolution};
 use std::collections::BTreeMap;
+mod hard_x;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FixedRole {
@@ -46,6 +47,7 @@ pub enum ConstraintError {
     MissingOrChangedPose(usize),
     FixedOutside(usize),
     FixedCollision(usize),
+    CrossesHardBoundary(usize),
 }
 impl std::fmt::Display for ConstraintError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -57,6 +59,7 @@ impl std::error::Error for ConstraintError {}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlacementConstraints {
     fixed: BTreeMap<usize, FixedPlacement>,
+    hard_x_barriers: Vec<(f32, f32)>,
 }
 impl PlacementConstraints {
     pub fn new(instance: &SPInstance, fixed: Vec<FixedPlacement>) -> Result<Self, ConstraintError> {
@@ -84,7 +87,10 @@ impl PlacementConstraints {
                 return Err(ConstraintError::DuplicateItem(id));
             }
         }
-        Ok(Self { fixed: map })
+        Ok(Self {
+            fixed: map,
+            hard_x_barriers: Vec::new(),
+        })
     }
     pub fn is_empty(&self) -> bool {
         self.fixed.is_empty()
@@ -134,9 +140,18 @@ impl PlacementConstraints {
                 .values()
                 .filter(|pi| pi.item_id == f.item_id);
             poses.next().is_some_and(|pi| pi.d_transf == f.pose) && poses.next().is_none()
-        })
+        }) && solution
+            .layout_snapshot
+            .placed_items
+            .values()
+            .all(|pi| self.allows_bbox(pi.item_id, pi.shape.bbox))
     }
     pub fn validate_layout(&self, layout: &Layout) -> Result<(), ConstraintError> {
+        for pi in layout.placed_items.values() {
+            if !self.allows_bbox(pi.item_id, pi.shape.bbox) {
+                return Err(ConstraintError::CrossesHardBoundary(pi.item_id));
+            }
+        }
         for f in self.fixed.values() {
             let mut items = layout
                 .placed_items

@@ -27,6 +27,15 @@ struct RotEntry {
 }
 
 impl UniformBBoxSampler {
+    pub fn new_in_regions(sample_bbox: Rect, item: &Item, regions: &[Rect]) -> Option<Self> {
+        let rot_entries = regions
+            .iter()
+            .filter_map(|region| Self::new(sample_bbox, item, *region))
+            .flat_map(|sampler| sampler.rot_entries)
+            .collect::<Vec<_>>();
+        (!rot_entries.is_empty()).then_some(Self { rot_entries })
+    }
+
     pub fn new(sample_bbox: Rect, item: &Item, container_bbox: Rect) -> Option<Self> {
         let rotations = match &item.allowed_rotation {
             RotationRange::None => &vec![0.0],

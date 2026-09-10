@@ -7,7 +7,7 @@ use crate::util::listener::{ReportType, SeparationProgress, SeparationResult, So
 use crate::util::optimization_step::{report_step, StepMetric as M};
 use crate::FMT;
 use itertools::Itertools;
-use jagua_rs::entities::PItemKey;
+use jagua_rs::entities::{Instance, PItemKey};
 use jagua_rs::geometry::DTransformation;
 use jagua_rs::probs::spp::entities::{SPInstance, SPPlacement, SPProblem, SPSolution};
 use jagua_rs::Instant;
@@ -306,6 +306,13 @@ impl Separator {
         debug_assert!(tracker_matches_layout(&self.ct, &self.prob.layout));
 
         let item_id = self.prob.layout.placed_items[pk].item_id;
+        if !self
+            .ct
+            .constraints
+            .allows_pose(self.instance.item(item_id), d_transf)
+        {
+            return pk;
+        }
 
         let old_loss = self.ct.get_loss(pk);
         let old_weighted_loss = self.ct.get_weighted_loss(pk);

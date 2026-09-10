@@ -297,6 +297,9 @@ fn disrupt_solution(
 
     let pk1 = sep.move_item(pk1, dt1_new);
     let pk2 = sep.move_item(pk2, dt2_new);
+    // 硬约束可能拒绝交换；包含件搬移必须以实际生效的姿态计算。
+    let dt1_new = sep.prob.layout.placed_items[pk1].d_transf;
+    let dt2_new = sep.prob.layout.placed_items[pk2].d_transf;
 
 
     // Step 4: Move all items that are practically contained by one of the swapped items to the "empty space" created by the moved item.

@@ -22,6 +22,11 @@ pub fn search_placement(l: &Layout, item: &Item, ref_pk: Option<PItemKey>, mut e
     let item_min_dim = f32::min(item.shape_cd.bbox.width(), item.shape_cd.bbox.height());
 
     let mut best_samples = BestSamples::new(sample_config.n_coord_descents, item_min_dim * UNIQUE_SAMPLE_THRESHOLD);
+    let regions = evaluator.sample_regions();
+    let sampler = |bbox| match &regions {
+        Some(regions) => UniformBBoxSampler::new_in_regions(bbox, item, regions),
+        None => UniformBBoxSampler::new(bbox, item, l.container.outer_cd.bbox),
+    };
 
     //Create the two uniform samplers, one focussed around the reference placement, one for the whole container
     let focussed_sampler = match ref_pk {
@@ -35,11 +40,11 @@ pub fn search_placement(l: &Layout, item: &Item, ref_pk: Option<PItemKey>, mut e
 
             //Create a uniform sampler focussed around the current placement
             let pi_bbox = l.placed_items[ref_pk].shape.bbox;
-            UniformBBoxSampler::new(pi_bbox, item, l.container.outer_cd.bbox)
+            sampler(pi_bbox)
         }
         None => None,
     };
-    let container_sampler = UniformBBoxSampler::new(l.container.outer_cd.bbox, item, l.container.outer_cd.bbox);
+    let container_sampler = sampler(l.container.outer_cd.bbox);
 
     //Perform the focussed sampling
     if let Some(focussed_sampler) = focussed_sampler {
