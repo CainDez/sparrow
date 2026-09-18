@@ -29,6 +29,8 @@ pub struct SparrowConfig {
 #[derive(Debug, Clone, Copy)]
 pub struct ExplorationConfig {
     pub shrink_step: f32,
+    /// 可选的时间减半策略；默认关闭，计时起点由调用方持有，跨重试保持不变。
+    pub shrink_step_schedule: Option<TimeHalvingShrink>,
     pub time_limit: Duration,
     pub max_conseq_failed_attempts: Option<usize>,
     pub solution_pool_distribution_stddev: f32,
@@ -39,6 +41,29 @@ pub struct ExplorationConfig {
     /// exploration phase stops as soon as a feasible solution at or below the
     /// target is found.
     pub target_width: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TimeHalvingShrink {
+    pub started_at: jagua_rs::Instant,
+    pub interval: Duration,
+    pub minimum_step: f32,
+}
+
+impl ExplorationConfig {
+    pub fn shrink_step_at(&self, now: jagua_rs::Instant) -> f32 {
+        let Some(schedule) = self.shrink_step_schedule else {
+            return self.shrink_step;
+        };
+        // 零周期没有有效的时间含义，保持原固定步长且避免除零。
+        if schedule.interval.is_zero() {
+            return self.shrink_step;
+        }
+        let halvings = now.saturating_duration_since(schedule.started_at).as_nanos()
+            / schedule.interval.as_nanos();
+        let factor = 0.5_f32.powi(halvings.min(i32::MAX as u128) as i32);
+        (self.shrink_step * factor).max(schedule.minimum_step)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +86,7 @@ pub const DEFAULT_SPARROW_CONFIG: SparrowConfig = SparrowConfig {
     rng_seed: None,
     expl_cfg: ExplorationConfig {
         shrink_step: 0.001,
+        shrink_step_schedule: None,
         time_limit: Duration::from_secs(9 * 60),
         max_conseq_failed_attempts: None,
         solution_pool_distribution_stddev: 0.25,

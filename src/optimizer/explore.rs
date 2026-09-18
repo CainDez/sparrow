@@ -75,10 +75,12 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
                 break;
             }
             // Shrink the strip width and clear the infeasible solution pool
+            let shrink_now = jagua_rs::Instant::now();
+            let shrink_step = config.shrink_step_at(shrink_now);
             let next_width = match config.target_width {
                 // [PandaNest patch] jump straight to the target instead of shrinking gradually
                 Some(tw) if tw < current_width => tw,
-                _ => current_width * (1.0 - config.shrink_step),
+                _ => current_width * (1.0 - shrink_step),
             };
             // 固定跨度是可尝试的边界；不能因为步长越过它而跳过清空窄尾段的机会。
             let next_width = if sep.ct.constraints.is_empty() {
@@ -100,7 +102,7 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
             }
             info!(
                 "[EXPL] shrinking strip by {}%: {:.3} -> {:.3}",
-                config.shrink_step * 100.0,
+                shrink_step * 100.0,
                 current_width,
                 next_width
             );
@@ -124,6 +126,10 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
                 &[
                     M::new("width_before", current_width, "mm"),
                     M::new("width", next_width, "mm"),
+                    M::new("shrink_ratio", shrink_step, "ratio"),
+                    M::new("shrink_schedule_elapsed", config.shrink_step_schedule.map_or(0.0, |schedule| {
+                        shrink_now.saturating_duration_since(schedule.started_at).as_secs_f32() * 1000.0
+                    }), "ms"),
                 ],
                 &sep.prob,
             );
