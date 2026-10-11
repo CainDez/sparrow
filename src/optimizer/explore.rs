@@ -1,14 +1,14 @@
+use crate::FMT;
 use crate::config::ExplorationConfig;
 use crate::optimizer::separator::{Separator, SeparatorConfig};
 use crate::sample::uniform_sampler::convert_sample_to_closest_feasible;
 use crate::util::listener::{ReportType, SolutionListener};
-use crate::util::optimization_step::{report_step, StepMetric as M};
+use crate::util::optimization_step::{StepMetric as M, report_step};
 use crate::util::terminator::Terminator;
-use crate::FMT;
 use float_cmp::approx_eq;
 use itertools::Itertools;
-use jagua_rs::collision_detection::hazards::collector::BasicHazardCollector;
 use jagua_rs::collision_detection::hazards::HazardEntity;
+use jagua_rs::collision_detection::hazards::collector::BasicHazardCollector;
 use jagua_rs::entities::{Instance, Layout, PItemKey};
 use jagua_rs::geometry::geo_traits::CollidesWith;
 use jagua_rs::probs::spp::entities::{SPInstance, SPSolution};
@@ -19,20 +19,42 @@ use rand_distr::Normal;
 use std::cmp::Reverse;
 
 /// Algorithm 12 from https://doi.org/10.48550/arXiv.2509.13329
-pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listener: &mut impl SolutionListener, term: &impl Terminator, config: &ExplorationConfig, allow_initial_target_stop: bool) -> Vec<SPSolution> {
+pub fn exploration_phase(
+    instance: &SPInstance,
+    sep: &mut Separator,
+    sol_listener: &mut impl SolutionListener,
+    term: &impl Terminator,
+    config: &ExplorationConfig,
+    allow_initial_target_stop: bool,
+) -> Vec<SPSolution> {
+    let width_lower_bound = super::width_bound::strip_width_lower_bound(sep);
     let mut current_width = sep.prob.strip_width();
     let mut best_width = current_width;
 
     // 热启动和被取消的 LBF 都不保证完整、无碰撞；不得把它们当作可行证书。
     let complete = instance.items.iter().all(|(item, quantity)| {
-        sep.prob.layout.placed_items.values().filter(|pi| pi.item_id == item.id).count() == *quantity
+        sep.prob
+            .layout
+            .placed_items
+            .values()
+            .filter(|pi| pi.item_id == item.id)
+            .count()
+            == *quantity
     });
     let allowed_poses = sep.prob.layout.placed_items.values().all(|pi| {
         let allowed = convert_sample_to_closest_feasible(pi.d_transf, instance.item(pi.item_id));
-        jagua_rs::geometry::normalize_rotation(pi.d_transf.rotation() - allowed.rotation()).abs() <= 1e-5
+        jagua_rs::geometry::normalize_rotation(pi.d_transf.rotation() - allowed.rotation()).abs()
+            <= 1e-5
     });
     if !complete || !allowed_poses {
-        report_step(sol_listener, "exploration_stop", "stopped", "invalid_initial_identity_or_rotation", &[], &sep.prob);
+        report_step(
+            sol_listener,
+            "exploration_stop",
+            "stopped",
+            "invalid_initial_identity_or_rotation",
+            &[],
+            &sep.prob,
+        );
         return Vec::new();
     }
     let initial_feasible = complete && sep.ct.get_total_loss() == 0.0;
@@ -41,13 +63,30 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
         feasible_sols.push(sep.prob.save());
         sol_listener.report(ReportType::ExplFeas, &feasible_sols[0], instance);
     }
-    info!("[EXPL] starting optimization with initial width: {:.3} ({:.3}%)",current_width,sep.prob.density() * 100.0);
+    info!(
+        "[EXPL] starting optimization with initial width: {:.3} ({:.3}%)",
+        current_width,
+        sep.prob.density() * 100.0
+    );
 
     // Feasibility-oracle calls frequently start from an already feasible LBF
     // or warm-start layout. Do not enter the expensive separator in that case.
-    if initial_feasible && allow_initial_target_stop && target_reached(current_width, config.target_width) {
-        report_step(sol_listener, "exploration_stop", "stopped", "initial_target_reached", &[], &sep.prob);
-        info!("[EXPL] initial solution already reaches target width ({:.3}), terminating", current_width);
+    if initial_feasible
+        && allow_initial_target_stop
+        && target_reached(current_width, config.target_width)
+    {
+        report_step(
+            sol_listener,
+            "exploration_stop",
+            "stopped",
+            "initial_target_reached",
+            &[],
+            &sep.prob,
+        );
+        info!(
+            "[EXPL] initial solution already reaches target width ({:.3}), terminating",
+            current_width
+        );
         return feasible_sols;
     }
 
@@ -62,16 +101,30 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
         if complete && total_loss == 0.0 {
             // If successfully separated
             if feasible_sols.is_empty() || current_width < best_width {
-                info!("[EXPL] feasible solution found! (width: {:.3}, dens: {:.3}%)",current_width,sep.prob.density() * 100.0);
+                info!(
+                    "[EXPL] feasible solution found! (width: {:.3}, dens: {:.3}%)",
+                    current_width,
+                    sep.prob.density() * 100.0
+                );
                 best_width = current_width;
                 feasible_sols.push(local_best.0.clone());
                 sol_listener.report(ReportType::ExplFeas, &local_best.0, instance);
             }
             // [PandaNest patch] feasibility-oracle mode: target reached, stop exploring.
             if target_reached(current_width, config.target_width) {
-                report_step(sol_listener, "exploration_stop", "stopped", "target_reached", &[], &sep.prob);
+                report_step(
+                    sol_listener,
+                    "exploration_stop",
+                    "stopped",
+                    "target_reached",
+                    &[],
+                    &sep.prob,
+                );
                 reported_stop = true;
-                info!("[EXPL] target width reached ({:.3}), terminating", current_width);
+                info!(
+                    "[EXPL] target width reached ({:.3}), terminating",
+                    current_width
+                );
                 break;
             }
             // Shrink the strip width and clear the infeasible solution pool
@@ -95,6 +148,18 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
                     "stopped",
                     "fixed_extent",
                     &[],
+                    &sep.prob,
+                );
+                reported_stop = true;
+                break;
+            }
+            if next_width < width_lower_bound || next_width >= current_width {
+                report_step(
+                    sol_listener,
+                    "exploration_stop",
+                    "stopped",
+                    "strip_width_lower_bound",
+                    &[M::new("lower_bound", width_lower_bound, "mm")],
                     &sep.prob,
                 );
                 reported_stop = true;
@@ -127,59 +192,111 @@ pub fn exploration_phase(instance: &SPInstance, sep: &mut Separator, sol_listene
                     M::new("width_before", current_width, "mm"),
                     M::new("width", next_width, "mm"),
                     M::new("shrink_ratio", shrink_step, "ratio"),
-                    M::new("shrink_schedule_elapsed", config.shrink_step_schedule.map_or(0.0, |schedule| {
-                        shrink_now.saturating_duration_since(schedule.started_at).as_secs_f32() * 1000.0
-                    }), "ms"),
+                    M::new(
+                        "shrink_schedule_elapsed",
+                        config.shrink_step_schedule.map_or(0.0, |schedule| {
+                            shrink_now
+                                .saturating_duration_since(schedule.started_at)
+                                .as_secs_f32()
+                                * 1000.0
+                        }),
+                        "ms",
+                    ),
                 ],
                 &sep.prob,
             );
             current_width = next_width;
             infeas_sol_pool.clear();
         } else {
-            info!("[EXPL] unable to reach feasibility (width: {:.3}, dens: {:.3}%, min loss: {})", current_width, sep.prob.density() * 100.0, FMT().fmt2(total_loss));
+            info!(
+                "[EXPL] unable to reach feasibility (width: {:.3}, dens: {:.3}%, min loss: {})",
+                current_width,
+                sep.prob.density() * 100.0,
+                FMT().fmt2(total_loss)
+            );
             sol_listener.report(ReportType::ExplInfeas, &local_best.0, instance);
 
             // Separation was not successful add it to the pool of infeasible solutions
             match infeas_sol_pool.binary_search_by(|(_, o)| o.partial_cmp(&total_loss).unwrap()) {
-                Ok(idx) | Err(idx) => infeas_sol_pool.insert(idx, (local_best.0.clone(), total_loss)),
+                Ok(idx) | Err(idx) => {
+                    infeas_sol_pool.insert(idx, (local_best.0.clone(), total_loss))
+                }
             }
 
             if infeas_sol_pool.len() >= config.max_conseq_failed_attempts.unwrap_or(usize::MAX) {
-                report_step(sol_listener, "exploration_stop", "stopped", "consecutive_failure_limit", &[
-                    M::new("failed_attempts", infeas_sol_pool.len() as f64, "count"),
-                ], &sep.prob);
+                report_step(
+                    sol_listener,
+                    "exploration_stop",
+                    "stopped",
+                    "consecutive_failure_limit",
+                    &[M::new(
+                        "failed_attempts",
+                        infeas_sol_pool.len() as f64,
+                        "count",
+                    )],
+                    &sep.prob,
+                );
                 reported_stop = true;
-                info!("[EXPL] max consecutive failed attempts ({}), terminating", infeas_sol_pool.len());
+                info!(
+                    "[EXPL] max consecutive failed attempts ({}), terminating",
+                    infeas_sol_pool.len()
+                );
                 break;
             }
 
             // Restore to a random solution from the pool, with better solutions having more chance to be selected
             let (selected_idx, selected_sol) = {
                 // Sample a value in range [0.0, 1.0[ from a normal distribution
-                let distribution = Normal::new(0.0, config.solution_pool_distribution_stddev).unwrap();
+                let distribution =
+                    Normal::new(0.0, config.solution_pool_distribution_stddev).unwrap();
                 let sample = distribution.sample(&mut sep.rng).abs().min(0.999);
                 // Map it to an index in the infeasible solution pool (better solutions are at the start of the pool)
                 let selected_idx = (sample * infeas_sol_pool.len() as f32) as usize;
 
                 let (selected_sol, loss) = &infeas_sol_pool[selected_idx];
-                info!("[EXPL] starting solution {}/{} selected from solution pool (l: {}) to disrupt", selected_idx, infeas_sol_pool.len(), FMT().fmt2(*loss));
+                info!(
+                    "[EXPL] starting solution {}/{} selected from solution pool (l: {}) to disrupt",
+                    selected_idx,
+                    infeas_sol_pool.len(),
+                    FMT().fmt2(*loss)
+                );
                 (selected_idx, selected_sol)
             };
 
             // Rollback to this solution and disrupt it.
             sep.rollback(selected_sol, None);
-            report_step(sol_listener, "pool_rollback", "restored", "sample_infeasible_pool", &[
-                M::new("pool_index", selected_idx as f64, "index"),
-                M::new("pool_size", infeas_sol_pool.len() as f64, "count"),
-                M::new("loss", sep.ct.get_total_loss(), "loss"),
-            ], &sep.prob);
+            report_step(
+                sol_listener,
+                "pool_rollback",
+                "restored",
+                "sample_infeasible_pool",
+                &[
+                    M::new("pool_index", selected_idx as f64, "index"),
+                    M::new("pool_size", infeas_sol_pool.len() as f64, "count"),
+                    M::new("loss", sep.ct.get_total_loss(), "loss"),
+                ],
+                &sep.prob,
+            );
             disrupt_solution(sep, config, sol_listener);
         }
     }
 
-    if !reported_stop { report_step(sol_listener, "exploration_stop", "stopped", "termination_observed", &[], &sep.prob); }
+    if !reported_stop {
+        report_step(
+            sol_listener,
+            "exploration_stop",
+            "stopped",
+            "termination_observed",
+            &[],
+            &sep.prob,
+        );
+    }
     if let Some(best) = feasible_sols.last() {
-        info!("[EXPL] finished, best feasible solution: width: {:.3} ({:.3}%)",best_width,best.density(instance) * 100.0);
+        info!(
+            "[EXPL] finished, best feasible solution: width: {:.3} ({:.3}%)",
+            best_width,
+            best.density(instance) * 100.0
+        );
     } else {
         info!("[EXPL] finished without a complete feasible solution");
     }
@@ -229,7 +346,8 @@ fn disrupt_solution(
         .map(|(item, quantity)| item.shape_cd.surrogate().convex_hull_area * (*quantity as f32))
         .sum();
 
-    let cutoff_threshold_area = total_convex_hull_area * config.large_item_ch_area_cutoff_percentile;
+    let cutoff_threshold_area =
+        total_convex_hull_area * config.large_item_ch_area_cutoff_percentile;
 
     // Sort items by convex hull area in descending order.
     let sorted_items_by_ch_area = sep
@@ -254,7 +372,10 @@ fn disrupt_solution(
         cumulative_ch_area += item_ch_area * (*quantity as f32);
         if cumulative_ch_area > cutoff_threshold_area {
             ch_area_cutoff = item_ch_area;
-            debug!("[DSRP] cutoff ch area: {}, for item id: {}, bbox: {:?}",ch_area_cutoff, item.id, item.shape_cd.bbox);
+            debug!(
+                "[DSRP] cutoff ch area: {}, for item id: {}, bbox: {:?}",
+                ch_area_cutoff, item.id, item.shape_cd.bbox
+            );
             break;
         }
     }
@@ -270,7 +391,10 @@ fn disrupt_solution(
         .filter(|(_, pi)| pi.shape.surrogate().convex_hull_area >= ch_area_cutoff);
 
     //Choose a first item with a large enough convex hull
-    let (pk1, pi1) = large_items.clone().choose(&mut sep.rng).expect("[DSRP] failed to choose first item");
+    let (pk1, pi1) = large_items
+        .clone()
+        .choose(&mut sep.rng)
+        .expect("[DSRP] failed to choose first item");
 
     //Choose a second item with a large enough convex hull and different enough from the first.
     //If no such item is found, choose a random one.
@@ -299,7 +423,10 @@ fn disrupt_solution(
     let dt1_new = convert_sample_to_closest_feasible(dt2_old, sep.prob.instance.item(pi1.item_id));
     let dt2_new = convert_sample_to_closest_feasible(dt1_old, sep.prob.instance.item(pi2.item_id));
 
-    info!("[EXPL] disrupting by swapping two large items (id: {} <-> {})", pi1.item_id, pi2.item_id);
+    info!(
+        "[EXPL] disrupting by swapping two large items (id: {} <-> {})",
+        pi1.item_id, pi2.item_id
+    );
 
     let pk1 = sep.move_item(pk1, dt1_new);
     let pk2 = sep.move_item(pk2, dt2_new);
@@ -307,51 +434,66 @@ fn disrupt_solution(
     let dt1_new = sep.prob.layout.placed_items[pk1].d_transf;
     let dt2_new = sep.prob.layout.placed_items[pk2].d_transf;
 
-
     // Step 4: Move all items that are practically contained by one of the swapped items to the "empty space" created by the moved item.
-    //         This is particularly important when huge items are swapped with smaller items. 
-    //         The huge item will create a large empty space and many of the items which previously 
+    //         This is particularly important when huge items are swapped with smaller items.
+    //         The huge item will create a large empty space and many of the items which previously
     //         surrounded the smaller one will be contained by the huge one.
     {
         // transformation to convert the contained items' position (relative to the old and new positions of the swapped items)
-        let converting_transformation = dt1_new.compose().inverse()
-            .transform(&dt1_old.compose());
+        let converting_transformation = dt1_new.compose().inverse().transform(&dt1_old.compose());
 
-        for c1_pk in practically_contained_items(&sep.prob.layout, pk1).into_iter().filter(|c1_pk| *c1_pk != pk2) {
+        for c1_pk in practically_contained_items(&sep.prob.layout, pk1)
+            .into_iter()
+            .filter(|c1_pk| *c1_pk != pk2)
+        {
             let c1_pi = &sep.prob.layout.placed_items[c1_pk];
 
-            let new_dt = c1_pi.d_transf
+            let new_dt = c1_pi
+                .d_transf
                 .compose()
                 .transform(&converting_transformation)
                 .decompose();
 
             //Ensure the sure the new position is feasible
-            let new_feasible_dt = convert_sample_to_closest_feasible(new_dt, sep.prob.instance.item(c1_pi.item_id));
+            let new_feasible_dt =
+                convert_sample_to_closest_feasible(new_dt, sep.prob.instance.item(c1_pi.item_id));
             sep.move_item(c1_pk, new_feasible_dt);
         }
     }
 
     // Do the same for the second item, but using the second transformation
     {
-        let converting_transformation = dt2_new.compose().inverse()
-            .transform(&dt2_old.compose());
+        let converting_transformation = dt2_new.compose().inverse().transform(&dt2_old.compose());
 
-        for c2_pk in practically_contained_items(&sep.prob.layout, pk2).into_iter().filter(|c2_pk| *c2_pk != pk1) {
+        for c2_pk in practically_contained_items(&sep.prob.layout, pk2)
+            .into_iter()
+            .filter(|c2_pk| *c2_pk != pk1)
+        {
             let c2_pi = &sep.prob.layout.placed_items[c2_pk];
-            let new_dt = c2_pi.d_transf
+            let new_dt = c2_pi
+                .d_transf
                 .compose()
                 .transform(&converting_transformation)
                 .decompose();
 
             //make sure the new position is feasible
-            let new_feasible_dt = convert_sample_to_closest_feasible(new_dt, sep.prob.instance.item(c2_pi.item_id));
+            let new_feasible_dt =
+                convert_sample_to_closest_feasible(new_dt, sep.prob.instance.item(c2_pi.item_id));
             sep.move_item(c2_pk, new_feasible_dt);
         }
     }
-    report_step(sol_listener, "disrupt", "changed", "swap_large_items_and_relocate_contained_items", &[
-        M::new("item_a", swapped_ids.0 as f64, "index"), M::new("item_b", swapped_ids.1 as f64, "index"),
-        M::new("loss", sep.ct.get_total_loss(), "loss"),
-    ], &sep.prob);
+    report_step(
+        sol_listener,
+        "disrupt",
+        "changed",
+        "swap_large_items_and_relocate_contained_items",
+        &[
+            M::new("item_a", swapped_ids.0 as f64, "index"),
+            M::new("item_b", swapped_ids.1 as f64, "index"),
+            M::new("loss", sep.ct.get_total_loss(), "loss"),
+        ],
+        &sep.prob,
+    );
 }
 
 /// Collects all items which point of inaccessibility (POI) is contained by pk_c's shape.
@@ -359,15 +501,16 @@ fn practically_contained_items(layout: &Layout, pk_c: PItemKey) -> Vec<PItemKey>
     let pi_c = &layout.placed_items[pk_c];
     // Detect all collisions with the item pk_c's shape.
     let mut collector = BasicHazardCollector::new();
-    layout.cde().collect_poly_collisions(&pi_c.shape, &mut collector);
+    layout
+        .cde()
+        .collect_poly_collisions(&pi_c.shape, &mut collector);
 
     // Filter out the items that have their POI contained by pk_c's shape.
-    collector.iter()
-        .filter_map(|(_,he)| {
-            match he {
-                HazardEntity::PlacedItem { pk, .. } => Some(*pk),
-                _ => None
-            }
+    collector
+        .iter()
+        .filter_map(|(_, he)| match he {
+            HazardEntity::PlacedItem { pk, .. } => Some(*pk),
+            _ => None,
         })
         .filter(|pk| *pk != pk_c) // Ensure we don't include the item itself
         .filter(|pk| {

@@ -8,15 +8,16 @@ use crate::util::listener::{OptimizationPhase, ReportType, SolutionListener};
 use crate::util::terminator::Terminator;
 use jagua_rs::probs::spp::entities::{SPInstance, SPSolution};
 use log::info;
+use rand::rngs::Xoshiro256PlusPlus;
 use rand::{Rng, SeedableRng};
 use std::time::Duration;
-use rand::rngs::Xoshiro256PlusPlus;
 
+pub mod compress;
+pub mod explore;
 pub mod lbf;
 pub mod separator;
+mod width_bound;
 mod worker;
-pub mod explore;
-pub mod compress;
 
 ///Algorithm 11 from https://doi.org/10.48550/arXiv.2509.13329
 /// 未得到完整、可行的探索候选时返回 None；不能把不合格的初始布局用于压缩或最终回退。
@@ -27,7 +28,7 @@ pub fn optimize(
     terminator: &mut impl Terminator,
     expl_config: &ExplorationConfig,
     cmpr_config: &CompressionConfig,
-    initial_solution: Option<&SPSolution>
+    initial_solution: Option<&SPSolution>,
 ) -> Option<SPSolution> {
     optimize_constrained(
         instance,
@@ -95,7 +96,10 @@ pub fn optimize_constrained(
             let builder = LBFBuilder::new(instance.clone(), next_rng(), LBF_SAMPLE_CONFIG)
                 .with_constraints(constraints.clone())?
                 .construct_with_listener(terminator, sol_listener);
-            builder.prob
+            match builder {
+                Ok(builder) => builder.prob,
+                Err(_) => return Ok(None),
+            }
         }
         Some(init_sol) => {
             info!("[OPT] warm starting from provided initial solution");

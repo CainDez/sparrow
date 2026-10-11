@@ -1,19 +1,30 @@
 use crate::eval::lbf_evaluator::LBFEvaluator;
 use crate::eval::sample_eval::SampleEval;
-use crate::sample::search::{search_placement, SampleConfig};
-use crate::util::assertions;
-use crate::util::terminator::Terminator;
+use crate::sample::search::{SampleConfig, search_placement};
 use crate::util::listener::{DummySolListener, SolutionListener};
-use crate::util::optimization_step::{report_step, StepMetric as M};
+use crate::util::optimization_step::{StepMetric as M, report_step};
+use crate::util::terminator::Terminator;
 use itertools::Itertools;
+use jagua_rs::Instant;
 use jagua_rs::entities::Instance;
 use jagua_rs::probs::spp::entities::{SPInstance, SPPlacement, SPProblem};
-use jagua_rs::Instant;
 use log::debug;
 use ordered_float::OrderedFloat;
+use rand::rngs::Xoshiro256PlusPlus;
 use std::cmp::Reverse;
 use std::iter;
-use rand::rngs::Xoshiro256PlusPlus;
+
+/// 启发式初解构造失败，不代表数学不可行；保持已验证 best 的上层回退。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConstructionError {
+    pub item_id: usize,
+}
+impl std::fmt::Display for ConstructionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "无法构造零件 {} 的初始布局", self.item_id)
+    }
+}
+impl std::error::Error for ConstructionError {}
 
 pub struct LBFBuilder {
     pub constraints: crate::constraints::PlacementConstraints,
@@ -24,11 +35,7 @@ pub struct LBFBuilder {
 }
 
 impl LBFBuilder {
-    pub fn new(
-        instance: SPInstance,
-        rng: Xoshiro256PlusPlus,
-        sample_config: SampleConfig,
-    ) -> Self {
+    pub fn new(instance: SPInstance, rng: Xoshiro256PlusPlus, sample_config: SampleConfig) -> Self {
         let prob = SPProblem::new(instance.clone());
 
         Self {
@@ -40,7 +47,7 @@ impl LBFBuilder {
         }
     }
 
-    pub fn construct(self, term: &impl Terminator) -> Self {
+    pub fn construct(self, term: &impl Terminator) -> Result<Self, ConstructionError> {
         self.construct_with_listener(term, &mut DummySolListener)
     }
 
@@ -53,7 +60,11 @@ impl LBFBuilder {
         Ok(self)
     }
 
-    pub fn construct_with_listener(mut self, term: &impl Terminator, listener: &mut impl SolutionListener) -> Self {
+    pub fn construct_with_listener(
+        mut self,
+        term: &impl Terminator,
+        listener: &mut impl SolutionListener,
+    ) -> Result<Self, ConstructionError> {
         let start = Instant::now();
         let n_items = self.instance.items.len();
         let sorted_item_indices = (0..n_items)
@@ -69,7 +80,7 @@ impl LBFBuilder {
             })
             .collect_vec();
 
-        debug!("[CONSTR] placing items in order: {:?}",sorted_item_indices);
+        debug!("[CONSTR] placing items in order: {:?}", sorted_item_indices);
 
         for item_id in sorted_item_indices {
             // [PandaNest patch] construction is interruptible per item; a killed
@@ -79,7 +90,7 @@ impl LBFBuilder {
                 break;
             }
             if self.constraints.is_empty() {
-                self.place_item(item_id, listener);
+                self.place_item(item_id, term, listener)?;
             } else {
                 self.place_constrained_item(item_id, term, listener);
             }
@@ -90,30 +101,75 @@ impl LBFBuilder {
         if !self.prob.layout.placed_items.is_empty() {
             self.constraints.fit_initial_strip(&mut self.prob);
         }
-        report_step(listener, "initial_layout", "constructed", "fit_initial_strip", &[], &self.prob);
-        debug!("[CONSTR] placed all items in width: {:.3} (in {:?})",self.prob.strip_width(), start.elapsed());
-        self
+        report_step(
+            listener,
+            "initial_layout",
+            "constructed",
+            "fit_initial_strip",
+            &[],
+            &self.prob,
+        );
+        debug!(
+            "[CONSTR] placed all items in width: {:.3} (in {:?})",
+            self.prob.strip_width(),
+            start.elapsed()
+        );
+        Ok(self)
     }
 
-    fn place_item(&mut self, item_id: usize, listener: &mut impl SolutionListener) {
-        match self.find_placement(item_id) {
-            Some(p_opt) => {
-                self.prob.place_item(p_opt);
-                report_step(listener, "initial_place", "accepted", "clear_candidate", &[M::new("item", item_id as f64, "index")], &self.prob);
-                debug!("[CONSTR] placing item {}/{} with id {} at [{}]",self.prob.layout.placed_items.len(),self.instance.total_item_qty(),p_opt.item_id,p_opt.d_transf);
+    fn place_item(
+        &mut self,
+        item_id: usize,
+        term: &impl Terminator,
+        listener: &mut impl SolutionListener,
+    ) -> Result<(), ConstructionError> {
+        // 上游 #159 的有界迭代构造；继续保留 PandaNest 的逐件取消与单次预算。
+        while !term.kill() {
+            if let Some(placement) = self.find_placement_until(item_id, term.timeout_at()) {
+                if term.kill() {
+                    return Ok(());
+                }
+                self.prob.place_item(placement);
+                report_step(
+                    listener,
+                    "initial_place",
+                    "accepted",
+                    "clear_candidate",
+                    &[M::new("item", item_id as f64, "index")],
+                    &self.prob,
+                );
+                return Ok(());
             }
-            None => {
-                debug!("[CONSTR] failed to place item with id {}, expanding strip width",item_id);
-                self.prob.change_strip_width(self.prob.strip_width() * 1.2);
-                report_step(listener, "initial_expand", "retry", "no_clear_candidate", &[M::new("item", item_id as f64, "index")], &self.prob);
-                assert!(assertions::strip_width_is_in_check(&self.prob), "strip-width is running away (>{:.3}), item {item_id} does not seem to fit into the strip", self.prob.strip_width());          
-                self.place_item(item_id, listener);
+            let next_width = self.prob.strip_width() * 1.2;
+            let width_limit = 2.0
+                * self
+                    .instance
+                    .items
+                    .iter()
+                    .map(|(item, qty)| item.shape_cd.diameter * *qty as f32)
+                    .sum::<f32>();
+            if !next_width.is_finite() || next_width >= width_limit {
+                report_step(
+                    listener,
+                    "initial_place",
+                    "stopped",
+                    "bounded_construction_failed",
+                    &[M::new("item", item_id as f64, "index")],
+                    &self.prob,
+                );
+                return Err(ConstructionError { item_id });
             }
+            self.prob.change_strip_width(next_width);
+            report_step(
+                listener,
+                "initial_expand",
+                "retry",
+                "no_clear_candidate",
+                &[M::new("item", item_id as f64, "index")],
+                &self.prob,
+            );
         }
-    }
-
-    fn find_placement(&mut self, item_id: usize) -> Option<SPPlacement> {
-        self.find_placement_until(item_id, None)
+        Ok(())
     }
 
     fn place_constrained_item(
@@ -190,12 +246,11 @@ impl LBFBuilder {
         );
 
         match best_sample {
-            Some((d_transf, SampleEval::Clear { .. })) => {
-                self.constraints
-                    .allows_pose(item, d_transf)
-                    .then_some(SPPlacement { item_id, d_transf })
-            }
-            _ => None
+            Some((d_transf, SampleEval::Clear { .. })) => self
+                .constraints
+                .allows_pose(item, d_transf)
+                .then_some(SPPlacement { item_id, d_transf }),
+            _ => None,
         }
     }
 }
